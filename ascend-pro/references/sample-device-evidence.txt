@@ -1,0 +1,34 @@
+== Device Context: Ascend310P host video service ==
+
+== System ==
+Linux atlas-host 5.10.0 #1 SMP aarch64 GNU/Linux
+
+== OS Release ==
+PRETTY_NAME="Ubuntu 22.04"
+
+== Ascend Device ==
++------------------------------------------------------------------------------+
+| npu-smi 23.x.x                       Version: 23.x.x                          |
++------------------------------------------------------------------------------+
+| NPU   Name           Health  Power(W)  Temp(C)  Memory-Usage(MB)  Util(%)     |
+| 0     Ascend310P     OK      12.5      48       1024 / 8192       32          |
++------------------------------------------------------------------------------+
+
+== CANN Environment ==
+ASCEND_HOME_PATH=/usr/local/Ascend/ascend-toolkit/latest
+ASCEND_TOOLKIT_HOME=/usr/local/Ascend/ascend-toolkit/latest
+
+== Tools ==
+/usr/local/Ascend/ascend-toolkit/latest/bin/atc
+/usr/local/Ascend/ascend-toolkit/latest/bin/aclprof
+
+== Libraries ==
+/usr/local/Ascend/ascend-toolkit/latest/runtime/lib64/stub/libascendcl.so
+/usr/local/Ascend/ascend-toolkit/latest/runtime/lib64/libascendcl.so
+/usr/local/Ascend/ascend-toolkit/latest/runtime/lib64/libacl_dvpp.so
+
+== Project Search ==
+src/infer.cpp: aclrtMalloc(&inputDev, inputSize, ACL_MEM_MALLOC_NORMAL_ONLY)
+src/infer.cpp: aclrtMemcpy(inputDev, inputSize, hostData, inputSize, ACL_MEMCPY_HOST_TO_DEVICE)
+src/infer.cpp: aclmdlExecute(modelId, input, output)
+src/preprocess.cpp: cv::resize(frame, resized, cv::Size(640, 640))

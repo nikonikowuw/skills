@@ -1,0 +1,45 @@
+== Device Context: Ascend310P host video service ==
+
+== System ==
+Linux ascend310p-host 5.10.0 #1 SMP aarch64 GNU/Linux
+
+== OS Release ==
+PRETTY_NAME="Ubuntu 22.04"
+
+== Ascend Device ==
+| 0     Ascend310P     OK      12.5      48       1024 / 8192       32          |
+
+== CANN Environment ==
+ASCEND_HOME_PATH=/usr/local/Ascend/ascend-toolkit/7.0.RC1
+ASCEND_TOOLKIT_HOME=/usr/local/Ascend/ascend-toolkit/7.0.RC1
+
+== Libraries ==
+/usr/local/Ascend/ascend-toolkit/7.0.RC1/runtime/lib64/libascendcl.so
+/usr/local/Ascend/ascend-toolkit/7.0.RC1/runtime/lib64/libacl_dvpp.so
+
+== Model ==
+models/yolo_310p.om
+atc --soc_version=Ascend310P3 --model=yolo.onnx --output=models/yolo_310p
+
+== Device Context: Atlas200I-A2 container edge app ==
+
+== System ==
+Linux atlas200i-container 5.10.0 #1 SMP aarch64 GNU/Linux
+
+== OS Release ==
+PRETTY_NAME="Ubuntu 20.04"
+
+== Ascend Device ==
+| 0     Atlas 200I A2  OK      8.0       45       512 / 4096        18          |
+
+== CANN Environment ==
+ASCEND_HOME_PATH=/usr/local/Ascend/ascend-toolkit/6.3.RC2
+ASCEND_TOOLKIT_HOME=/usr/local/Ascend/ascend-toolkit/6.3.RC2
+
+== Libraries ==
+/usr/local/Ascend/ascend-toolkit/6.3.RC2/runtime/lib64/libascendcl.so
+/usr/local/Ascend/ascend-toolkit/6.3.RC2/runtime/lib64/libacl_dvpp.so
+
+== Model ==
+models/yolo_atlas200i_a2.om
+atc --soc_version=Ascend310B4 --model=yolo.onnx --output=models/yolo_atlas200i_a2
