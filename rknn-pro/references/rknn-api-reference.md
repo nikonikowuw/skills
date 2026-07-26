@@ -29,18 +29,21 @@ Initialize RKNN runtime context from a `.rknn` model blob.
 | `flag` | Initialization flags (see below) |
 | `extend` | Extended init info (can be NULL) |
 
-**Common flags:**
+**Common flags (names from `rknn_api.h`; use the header's constants, do not hard-code values):**
 
-| Flag | Value | Purpose |
-|---|---|---|
-| `0` | default | Normal init |
-| `RKNN_FLAG_PRIOR_MEDIUM` | 2 | Medium priority |
-| `RKNN_FLAG_PRIOR_HIGH` | 4 | High priority |
-| `RKNN_FLAG_PRIOR_LOW` | 1 | Low priority |
-| `RKNN_FLAG_ASYNC_MASK` | 0x10 | Async inference support |
-| `RKNN_FLAG_COLLECT_PERF_MASK` | 0x40 | Collect performance data |
+| Flag | Purpose |
+|---|---|
+| `0` | Normal init |
+| `RKNN_FLAG_PRIOR_HIGH` / `RKNN_FLAG_PRIOR_MEDIUM` / `RKNN_FLAG_PRIOR_LOW` | Context scheduling priority |
+| `RKNN_FLAG_ASYNC_MASK` | Previous-frame output mode in Runtime releases whose header documents that behavior; it is not a generic nonblocking `rknn_run` flag |
+| `RKNN_FLAG_COLLECT_PERF_MASK` | Collect performance data |
 
 **Returns:** 0 on success, negative on error.
+
+In the current official header, `RKNN_FLAG_ASYNC_MASK` makes `rknn_outputs_get` retrieve the previous
+frame so a single-threaded loop waits less. The same header says multithreaded mode does not need the
+flag. Re-check the selected target header because this behavior is version-bound; do not use the flag
+as proof that `rknn_run` is nonblocking or that one context is safe for concurrent calls.
 
 ### `rknn_destroy`
 
@@ -85,10 +88,10 @@ typedef struct {
     rknn_tensor_type type;    // data type (INT8/INT16/FP16/FP32/UINT8)
     uint32_t w_stride;        // width stride (for zero-copy)
     uint32_t h_stride;        // height stride (for zero-copy)
-    int32_t qnt_type;         // quantization type
-    int8_t fl;                // fractional length (for affine quantization)
-    float scale;              // scale (for asymmetric quantization)
-    uint8_t zp;               // zero point (for asymmetric quantization)
+    rknn_tensor_qnt_type qnt_type; // quantization type
+    int8_t fl;                // fractional length (for DFP quantization)
+    int32_t zp;               // zero point (signed — asymmetric INT8 zero points can be negative)
+    float scale;              // scale (for affine/asymmetric quantization)
 } rknn_tensor_attr;
 ```
 
@@ -121,7 +124,8 @@ typedef struct {
 } rknn_input;
 ```
 
-- `pass_through=0`: Runtime will quantize the input according to model requirements.
+- `pass_through=0`: Runtime converts the host tensor to the model's native input requirements. That
+  can include layout/type conversion or quantization and can add measurable CPU/runtime overhead.
 - `pass_through=1`: Data must already be in the expected format (for zero-copy or pre-quantized paths).
 - Multiple inputs: set `index` for each input tensor.
 
@@ -131,7 +135,9 @@ typedef struct {
 int rknn_run(rknn_context ctx, rknn_run_extend *extend);
 ```
 
-Run synchronous inference. Blocks until NPU completes.
+Submit inference in the classic Runtime flow. Completion and output timing depend on the selected
+Runtime API and initialization flags; follow the exact header and pair newer submit/wait APIs when
+the installed release exposes them.
 
 ### `rknn_outputs_get`
 
@@ -143,13 +149,20 @@ Get inference outputs.
 
 ```c
 typedef struct {
-    uint32_t want_float;       // 1: dequantize to float, 0: keep quantized
-    uint8_t pass_through;      // 0: with post-process, 1: raw NPU output
+    uint8_t want_float;        // 1: dequantize to float, 0: keep quantized
+    uint8_t is_prealloc;       // 1: caller provides buf, 0: runtime allocates
+    uint32_t index;            // output tensor index
+    void *buf;                 // output data (runtime- or caller-allocated per is_prealloc)
+    uint32_t size;             // output data size in bytes
 } rknn_output;
 ```
 
-- `want_float=1`: Runtime converts INT8 output to float (slower, uses CPU).
-- `want_float=0`: Get raw quantized output (faster, needs manual dequantize with scale/zp).
+- `want_float=1`: Runtime converts the output to float for the caller. For quantized outputs this
+  includes dequantization and may add host-side conversion overhead. It does not describe the NPU
+  graph's execution precision. Measure before preferring `want_float=0`.
+- `want_float=0`: Get the native/raw output and apply the queried quantization contract when needed.
+  It often avoids conversion work, but choose it from correctness and end-to-end measurements rather
+  than treating it as an unconditional production rule.
 
 ### `rknn_outputs_release`
 
@@ -166,12 +179,14 @@ Release output buffers obtained from `rknn_outputs_get`. Must call to avoid memo
 ### `rknn_create_mem`
 
 ```c
-rknn_tensor_mem *rknn_create_mem(rknn_context ctx, size_t size);
+rknn_tensor_mem *rknn_create_mem(rknn_context ctx, uint32_t size);
 ```
 
 Create internal NPU-accessible memory. Returns handle for use with `rknn_set_io_mem`.
 
-- Memory is allocated in NPU address space (contiguous DMA memory).
+- Runtime allocates NPU-accessible tensor memory. The backing allocator and physical-contiguity
+  guarantees are BSP/runtime details; use the returned handle and target API contract rather than
+  assuming a particular heap implementation.
 - Use for input/output buffers in zero-copy paths.
 - For every tensor allocation, compare the compatibility-selected size field, `size`, and
   `size_with_stride` when available. For an RGA-written input, also include the bytes implied by
@@ -180,7 +195,7 @@ Create internal NPU-accessible memory. Returns handle for use with `rknn_set_io_
 ### `rknn_create_mem_from_fd`
 
 ```c
-rknn_tensor_mem *rknn_create_mem_from_fd(rknn_context ctx, int fd, void *priv_data, size_t size, int prot);
+rknn_tensor_mem *rknn_create_mem_from_fd(rknn_context ctx, int32_t fd, void *virt_addr, uint32_t size, int32_t offset);
 ```
 
 Import a DMA-BUF file descriptor as NPU-accessible memory. This is the **key zero-copy API** — RGA output
@@ -189,8 +204,9 @@ or MPP decode buffer can be imported directly without copying.
 | Parameter | Description |
 |---|---|
 | `fd` | DMA-BUF file descriptor |
-| `size` | Buffer size |
-| `prot` | Protection flags (PROT_READ, PROT_WRITE, etc.) |
+| `virt_addr` | CPU mapping of the buffer. Pass the mapped address when CPU code will touch the data; whether NULL is accepted is release-dependent — follow the installed header's comment |
+| `size` | Buffer size in bytes |
+| `offset` | Byte offset of the tensor data inside the DMA-BUF (usually 0). This is **not** an mmap protection flag — passing `PROT_READ` here silently shifts the import by 1 byte |
 
 Returns NULL on failure.
 
@@ -223,14 +239,18 @@ Destroy NPU memory. Must call for every `rknn_create_mem`/`rknn_create_mem_from_
 int rknn_set_core_mask(rknn_context ctx, rknn_core_mask core_mask);
 ```
 
-Set which NPU cores to use (RK3576 has dual-core NPU).
+Set a core mask on a multi-core platform. The enum in a shared header does not prove that every mask
+is available on every SoC/runtime; validate the selected target and check the return code.
 
 | `core_mask` | Description |
 |---|---|
 | `RKNN_NPU_CORE_AUTO` | Auto-balance across cores (default) |
 | `RKNN_NPU_CORE_0` | Use only NPU core 0 |
 | `RKNN_NPU_CORE_1` | Use only NPU core 1 |
+| `RKNN_NPU_CORE_2` | Use only NPU core 2 when supported |
 | `RKNN_NPU_CORE_0_1` | Use both cores |
+| `RKNN_NPU_CORE_0_1_2` | Use cores 0, 1, and 2 when supported |
+| `RKNN_NPU_CORE_ALL` | Let Runtime select available cores according to the platform |
 
 ---
 
@@ -288,37 +308,40 @@ rknn_destroy(ctx);
 ### Zero-copy path (DMA-BUF import)
 
 ```c
-// ... init and query ...
+// ... init ...
 
-// RGA output is a DMA-BUF fd
-int rga_fd = get_rga_output_fd();
-
-// Import fd as NPU memory
-rknn_tensor_mem *input_mem = rknn_create_mem_from_fd(ctx, rga_fd, NULL, size, PROT_READ);
-
-// Keep the queried tensor layout and make RGA produce that exact destination layout.
+// 1. Query I/O attributes BEFORE touching memory
 rknn_tensor_attr input_attr;
+memset(&input_attr, 0, sizeof(input_attr));
 input_attr.index = 0;
 rknn_query(ctx, RKNN_QUERY_INPUT_ATTR, &input_attr, sizeof(input_attr));
+
+rknn_tensor_attr output_attr;
+memset(&output_attr, 0, sizeof(output_attr));
+output_attr.index = 0;
+rknn_query(ctx, RKNN_QUERY_OUTPUT_ATTR, &output_attr, sizeof(output_attr));
+
+// 2. Make RGA produce the queried input layout, writing into a DMA-BUF
 uint32_t dst_w_stride = input_attr.w_stride ? input_attr.w_stride : model_width;
 uint32_t dst_h_stride = input_attr.h_stride ? input_attr.h_stride : model_height;
 // Pass dst_w_stride/dst_h_stride to RGA wrapbuffer_fd/wrapbuffer_handle.
+int rga_fd = get_rga_output_fd();
+
+// 3. Import the fd as NPU input memory (virt_addr = CPU mapping, offset usually 0)
+rknn_tensor_mem *input_mem = rknn_create_mem_from_fd(ctx, rga_fd, rga_virt_addr, input_size, 0);
+
+// 4. Allocate output memory (size rules: see memory-alignment.md)
+rknn_tensor_mem *output_mem = rknn_create_mem(ctx, output_alloc_size);
+
+// 5. Bind BOTH input and output before running
 rknn_set_io_mem(ctx, input_mem, &input_attr);
-
-// Run
-rknn_run(ctx, NULL);
-
-// Zero-copy output
-rknn_tensor_mem *output_mem = rknn_create_mem(ctx, output_size);
-rknn_tensor_attr output_attr;
-output_attr.index = 0;
 rknn_set_io_mem(ctx, output_mem, &output_attr);
 
-// Run again (output goes directly into output_mem)
+// 6. Single run — NPU reads input_mem and writes output_mem directly
 rknn_run(ctx, NULL);
 
-// Read only what you need from output_mem->virt_addr
-// ...
+// 7. Read only what you need from output_mem->virt_addr
+//    (mind cache flags — see rknn_mem_sync in known-crash-patterns.md)
 
 rknn_destroy_mem(ctx, input_mem);
 rknn_destroy_mem(ctx, output_mem);

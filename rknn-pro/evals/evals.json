@@ -1,0 +1,100 @@
+{
+  "skill_name": "rknn-pro",
+  "evals": [
+    {
+      "id": 1,
+      "prompt": "Our RK3588 C++ service feeds normalized float arrays through rknn_inputs_set with RKNN_TENSOR_FLOAT32 and pass_through=0. A reviewer says Rockchip cannot use FP32 anywhere. Analyze whether the input API usage is valid and explain what must be measured or queried before changing it.",
+      "expected_output": "Separates host tensor dtype from NPU graph precision and gives an evidence-based validation plan.",
+      "files": [],
+      "expectations": [
+        "States that RKNN_TENSOR_FLOAT32 is a valid Runtime API tensor type.",
+        "Does not claim host FP32 input proves FP32 execution on the NPU.",
+        "Checks pass_through, queried tensor attributes, conversion configuration, correctness, and conversion cost."
+      ]
+    },
+    {
+      "id": 2,
+      "prompt": "Toolkit2 2.3.x rejects or warns about Where, Gather and a custom detection tail in my RK3576 ONNX. Can I assume those layers automatically fall back to CPU? Give me the conversion and mixed-quantization workflow, including concrete API names.",
+      "expected_output": "Avoids a blanket CPU-fallback claim and uses the official version-bound operator and hybrid-quantization workflow.",
+      "files": [],
+      "expectations": [
+        "Distinguishes NPU mapping, graph rewriting, documented CPU/custom operators, rejection, and application-side implementation.",
+        "Uses hybrid_quantization_step1 and hybrid_quantization_step2 rather than rknn.config(custom_string=...).",
+        "Requires exact Toolkit2 target documentation and conversion logs."
+      ]
+    },
+    {
+      "id": 3,
+      "prompt": "I need a source-level crash audit of an RK3568 video inference daemon, but the board vendor did not expose a serial number and I cannot access the device until next week. Start the useful work now and tell me what remains unverified.",
+      "expected_output": "Starts source work without blocking on a serial number and scopes board-dependent conclusions correctly.",
+      "files": [],
+      "expectations": [
+        "Allows source-only audit work to begin immediately.",
+        "Treats a serial as optional and permits a stable device label.",
+        "Defers ABI, driver, allocator, and performance conclusions until a software fingerprint is collected."
+      ]
+    },
+    {
+      "id": 4,
+      "prompt": "Our RKNN model built with a newer Toolkit2 fails in rknn_init on one RK3588 image. Produce a compatibility diagnosis without assuming semantic-version ordering proves compatibility.",
+      "expected_output": "Uses artifact and device evidence rather than a fabricated universal Toolkit/Runtime matrix.",
+      "files": [],
+      "expectations": [
+        "Records Toolkit2, Runtime/API, driver, target, model hash, conversion options, and pre-compile mode.",
+        "Does not classify a generic rknn_init failure as a version mismatch without evidence.",
+        "Recommends a target parity test and a vendor-model-zoo control artifact."
+      ]
+    },
+    {
+      "id": 5,
+      "prompt": "Design an RK3576 detector-plus-classifier service. The detector and classifier each have a worker thread and their own rknn_context. The team wants to enable RKNN_FLAG_ASYNC_MASK on both contexts, use an unbounded queue, and allocate classifier crops as width*height*3. Review the design and propose a safe scheduling and measurement plan.",
+      "expected_output": "Corrects the async-flag model and specifies bounded ownership, stride-aware allocation, core assignment, cleanup, and end-to-end measurement.",
+      "files": [],
+      "expectations": [
+        "Explains that RKNN_FLAG_ASYNC_MASK has previous-frame output semantics in current headers and is not required merely because workers are multithreaded.",
+        "Requires separate context ownership, bounded queues, retained frame lifetime, and orderly shutdown.",
+        "Rejects width*height*3 as sufficient without checked stride-aware size calculation and return-code validation.",
+        "Benchmarks AUTO and explicit core masks with throughput, tail latency, CPU, memory, queue wait, and thermal state."
+      ]
+    },
+    {
+      "id": 6,
+      "prompt": "Use the bundled rknn-pro baseline tool to parse references/sample-device-evidence.txt. Report the device identifier, SoC, RGA driver, library roots, and open risks, then explain which values are parser drafts rather than deployment proof. Do not edit the sample.",
+      "expected_output": "Runs the bundled parser and accurately summarizes the sample without treating discovered paths as selected runtime facts.",
+      "files": ["references/sample-device-evidence.txt"],
+      "expectations": [
+        "Reports device identifier unknown, SoC RK3568, and RGA driver 1.2.10.",
+        "Reports /usr/lib as the library root rather than listing individual .so files as roots.",
+        "Includes the missing-device-identifier risk and does not make it a blocker for source-only work.",
+        "States that library sightings and generated baseline fields require review against raw evidence and actual linkage."
+      ]
+    },
+    {
+      "id": 7,
+      "prompt": "Our stock Ultralytics YOLOv8 ONNX has one 1x84x8400 output. A reviewer says every Sigmoid, DFL, decode and concat node must always be deleted before RKNN conversion. Decide whether that rule is universal and give a version-aware experiment that chooses between the stock output contract and Rockchip raw branches.",
+      "expected_output": "Rejects a universal graph-surgery rule and ties the export boundary to the exact postprocessor, compiler mapping, accuracy, and measured performance.",
+      "files": [],
+      "expectations": [
+        "Does not claim that every Sigmoid or DFL node must always be removed.",
+        "Compares the stock graph with the version-matched Rockchip model-zoo or export path and preserves distinct output contracts.",
+        "Uses conversion logs, queried output attributes, framework parity, and accuracy/latency measurements to decide.",
+        "States that a 1x84x8400 shape alone does not prove the exact graph boundary and requires inspecting ONNX nodes or outputs."
+      ]
+    },
+    {
+      "id": 8,
+      "prompt": "We inherited detector.rknn but have no ONNX, conversion script, Toolkit2 log, or calibration records. The C++ service currently sends normalized FP32 with RKNN_TENSOR_FLOAT32 and pass_through=0. Confirm whether normalization was baked into conversion and whether the model is INT8, then approve a zero-copy UINT8 rewrite for production.",
+      "expected_output": "Refuses to infer conversion-time normalization or whole-graph INT8 from the RKNN file and host I/O, applies the model conversion evidence gate, and scopes what work may continue.",
+      "files": [],
+      "expectations": [
+        "Marks conversion-time normalization and actual graph/layer precision as unknown rather than guessing from RKNN_TENSOR_FLOAT32, pass_through, or the .rknn artifact.",
+        "Requests the ONNX SHA-256, IR/opset, producer/metadata, input/output names, shapes, dtypes, dynamic dimensions, and candidate embedded preprocessing.",
+        "Requests the exact conversion script/config, Toolkit2 version and target, verbose build report, calibration provenance, mixed-precision configuration, and RKNN SHA-256.",
+        "Separately classifies normalization in the ONNX graph, Toolkit2 mean_values/std_values, and application preprocessing, and requires one verified end-to-end contract.",
+        "Explains that runtime tensor attributes describe the external I/O contract but cannot prove Toolkit2 normalization settings or whole-graph INT8 precision.",
+        "Does not approve the production zero-copy UINT8 rewrite while model evidence is missing.",
+        "Explicitly permits unrelated source analysis to continue while keeping model-dependent conclusions blocked and marked unknown."
+      ]
+    }
+  ]
+}

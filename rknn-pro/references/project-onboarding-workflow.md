@@ -6,7 +6,9 @@ Use this workflow before writing or modifying Rockchip performance code in an un
 
 ## Rule
 
-Do not start implementation until this workflow is complete or an explicit exception is stated.
+Start source-only analysis immediately when it does not depend on board facts. Before changing ABI,
+allocator, buffer layout, core masks, or performance-sensitive integration, complete the relevant
+phases below or state exactly which target facts remain unverified.
 
 ## Phase 1: Board and BSP Identification
 
@@ -29,11 +31,11 @@ Identify which subsystems are actually present:
 - RGA nodes and debug entries
 - NPU-related kernel modules or devices when visible
 
-Check:
+Check (exact commands: sections 2–3 of the
+[device-baseline-workflow.md](device-baseline-workflow.md) checklist):
 
-- `lsmod | grep -Ei 'rockchip|rga|mpp|vcodec|rknpu|iep'`
-- `/sys/kernel/debug/rkrga/driver_version`
-- `/proc/rkrga/driver_version`
+- Rockchip-related modules via `lsmod`
+- RGA driver version nodes under `/sys/kernel/debug/rkrga` or `/proc/rkrga`
 - `dmesg` for driver init, fallback, or parameter errors
 
 Required output:
@@ -58,13 +60,8 @@ Check:
 - Whether the project links by system path, rpath, copied SDK path, or container mount
 - Whether multiple conflicting copies exist
 
-Useful commands:
-
-```bash
-find /usr /usr/local -maxdepth 4 \( -name 'librga.so*' -o -name 'librknnrt.so*' -o -name 'librockchip_mpp.so' -o -name 'libmpp.so' \) 2>/dev/null
-ldd <binary-or-shared-object>
-readelf -d <binary-or-shared-object>
-```
+Exact commands: sections 4–5 of the [device-baseline-workflow.md](device-baseline-workflow.md)
+checklist (`find` for the Rockchip `.so` set, then `ldd` / `readelf -d` on the target binary).
 
 If more than one plausible Rockchip userspace stack is installed, stop and resolve which one the project really uses for the selected board context.
 
@@ -90,15 +87,9 @@ Failure pattern:
 
 ## Phase 5: Exported Symbol Audit
 
-Confirm the required runtime APIs exist in the deployed shared objects.
-
-Useful commands:
-
-```bash
-nm -D <shared-object> | grep -E 'importbuffer_fd|wrapbuffer_fd|imcheck|rga|rknn_|mpi'
-readelf -Ws <shared-object> | grep -E 'importbuffer_fd|wrapbuffer_fd|imcheck|rga|rknn_|mpi'
-strings <shared-object> | grep -Ei 'version|rknn|rga_api'
-```
+Confirm the required runtime APIs exist in the deployed shared objects. Exact commands:
+section 6 of the [device-baseline-workflow.md](device-baseline-workflow.md) checklist
+(`nm -D` / `readelf -Ws` / `strings` on each Rockchip shared object).
 
 Check for:
 
@@ -149,10 +140,9 @@ If any item is missing, report a blocker instead of guessing.
 
 ## Suggested Command Order
 
-1. Run `scripts/detect-rockchip-env.sh`
-2. Run `scripts/collect-rockchip-debug.sh`
-3. Inspect project build files with `rg`
-4. Inspect binary dependencies with `ldd` or `readelf -d`
-5. Inspect library symbols with `nm -D` or `readelf -Ws`
-6. Compare findings against [version-audit.md](/Users/niko/.codex/skills/rockchip-performance/references/version-audit.md)
-7. Only then inspect or change pipeline code
+1. Run `scripts/rknn-diag.sh` (or the legacy `detect-rockchip-env.sh` + `collect-rockchip-debug.sh`)
+2. Inspect project build files with `rg`
+3. Inspect binary dependencies with `ldd` or `readelf -d`
+4. Inspect library symbols with `nm -D` or `readelf -Ws`
+5. Compare findings against [version-audit.md](version-audit.md)
+6. Only then inspect or change pipeline code

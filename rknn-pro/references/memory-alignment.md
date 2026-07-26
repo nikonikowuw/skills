@@ -33,7 +33,7 @@ runtime errors.
 | **DMA-BUF** dma_heap | 4 (varies) | 4 (varies) | page (4KB) | as requested |
 
 > **ws** = width_stride, **hs** = height_stride.
-> Alignment may vary by BSP version and SoC (RK3568 vs RK3576).
+> Alignment may vary by BSP version and SoC (RK3568 vs RK3576 vs RK3588).
 
 ## Alignment Calculation Functions
 
@@ -176,9 +176,11 @@ input.fmt = RKNN_TENSOR_NHWC;
 rknn_inputs_set(ctx, 1, &input);
 ```
 
-- No strict buffer address alignment — the runtime reads from host memory via DMA.
-- For `UINT8`: 1-byte alignment is sufficient.
-- For `FP32`: 4-byte alignment recommended.
+- Meet the host type's alignment and the selected Runtime API contract. This path may perform an
+  internal copy or conversion; do not infer a direct DMA read or a universal address-alignment rule.
+- For `UINT8`, byte alignment satisfies the C object type, but the surrounding image rows and source
+  allocator can impose stronger requirements.
+- For `FP32`, use at least the platform/type alignment and measure any Runtime conversion cost.
 - For NEON-optimized CPU preprocessing feeding this path: **16-byte alignment** improves performance.
 
 ### Path 2: `rknn_create_mem` (NPU-managed memory, zero-copy)
@@ -187,9 +189,9 @@ rknn_inputs_set(ctx, 1, &input);
 rknn_tensor_mem *mem = rknn_create_mem(ctx, size);
 ```
 
-- Allocated from dma-heap / ion, physically contiguous.
-- Address is page-aligned by the runtime allocator; the common Linux page size is 4KB, but verify
-  the target allocator rather than baking that assumption into cross-platform code.
+- Runtime returns NPU-accessible tensor memory. The backing dma-heap/ION choice, physical layout,
+  CPU mapping, and page alignment are BSP/runtime properties; query the returned handle and follow
+  the deployed API contract instead of assuming physical contiguity or a fixed allocator.
 - Use with `rknn_set_io_mem` to bind to a tensor.
 
 #### Defensive input allocation
@@ -278,7 +280,9 @@ authoritative size formula; the switch above is a minimum template, not a univer
 ### Path 3: `rknn_create_mem_from_fd` (DMA-BUF import, zero-copy)
 
 ```c
-rknn_tensor_mem *mem = rknn_create_mem_from_fd(ctx, dma_fd, NULL, size, PROT_READ);
+// virt_addr: CPU mapping of the DMA-BUF (NULL acceptance is release-dependent — check the header).
+// Last parameter is the byte OFFSET inside the fd (usually 0), not an mmap protection flag.
+rknn_tensor_mem *mem = rknn_create_mem_from_fd(ctx, dma_fd, dma_virt_addr, size, 0);
 ```
 
 - Imports an existing DMA-BUF from RGA, MPP, or dma_heap.
@@ -424,6 +428,21 @@ rknn_set_io_mem(ctx, input_mem, &attr);
 
 If strides don't match, NPU will read/write at wrong offsets and output will be garbage.
 
+## Dynamic Shape / Dynamic Batch Memory Allocation
+
+When using RKNN Dynamic Shape or Dynamic Batching, memory allocation must follow these strict rules to prevent Segmentation Faults (`SIGSEGV`) or buffer overruns:
+
+1. **Allocate for Max Capacity**: DMA-BUF buffers (`rknn_create_mem` or DRM allocations) MUST be sized for the **maximum supported batch size and spatial resolution**:
+   `alloc_size = max_batch * max_w_stride * max_h_stride * channels * bytes_per_pixel`
+2. **Query the supported shape set**: read the model's dynamic input ranges via
+   `rknn_query(ctx, RKNN_QUERY_INPUT_DYNAMIC_RANGE, ...)` before allocating buffers.
+3. **Select the active shape per run**: call `rknn_set_input_shapes` (name per the installed
+   header) with the current frame's shape, then re-query
+   `RKNN_QUERY_CURRENT_INPUT_ATTR` / `RKNN_QUERY_CURRENT_OUTPUT_ATTR` and rebind with
+   `rknn_set_io_mem`, while keeping the max-capacity DMA-BUF backing store. Follow the
+   `examples/functions/dynamic_shape` sample shipped with the installed Toolkit2 release —
+   query-command and function names have changed across releases.
+
 ## Common Mistakes
 
 1. **Passing unaligned width/height to RGA** → `imcheck` fails or silent corruption.
@@ -431,13 +450,14 @@ If strides don't match, NPU will read/write at wrong offsets and output will be 
 3. **MPP decode using internal mode when zero-copy needed** → can't get DMA-BUF fd.
 4. **RKNN passthrough input without setting correct `w_stride`/`h_stride`** → NPU misreads data.
 5. **Reusing `importbuffer_fd` every frame** → performance regression (import is expensive; do once).
-6. **Assuming RK3568 and RK3576 have identical alignment requirements** → verify on target BSP.
+6. **Assuming RK3568, RK3576, and RK3588 have identical alignment requirements** → verify on target BSP.
 7. **Checking `size_with_stride` in only one algorithm package** → sibling packages keep the old,
    undersized allocation path.
 8. **Allocating `attr.size` but wrapping the RGA destination with padded strides** → RGA can write
    beyond the DMA-BUF even though the logical tensor dimensions look correct.
 9. **Increasing allocation without passing NPU strides to RGA** → avoids one overrun but keeps the
    row layout inconsistent.
+10. **Allocating Dynamic Shape DMA-BUF for current shape instead of max shape** → crash (`SIGSEGV`) when a larger frame is passed.
 
 ## Verification Snippet
 

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
+import argparse
 import re
 import statistics
-import sys
 from collections import defaultdict
 
 
@@ -32,12 +32,17 @@ def percentile(values, pct):
     return ordered[idx]
 
 
-def main():
-    if len(sys.argv) != 2:
-      print("Usage: summarize-stage-latency.py <timing-log>")
-      return 1
+def parse_args():
+    parser = argparse.ArgumentParser(
+        description="Summarize Rockchip pipeline stage timings as CSV."
+    )
+    parser.add_argument("timing_log", help="log containing entries such as infer=5.2ms")
+    return parser.parse_args()
 
-    samples = load_samples(sys.argv[1])
+
+def main():
+    args = parse_args()
+    samples = load_samples(args.timing_log)
     if not samples:
         print("No stage timing samples found. Expected lines like: infer=5.2ms or rga: 830us")
         return 1

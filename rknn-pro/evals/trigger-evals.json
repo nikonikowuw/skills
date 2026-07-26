@@ -1,0 +1,22 @@
+[
+  {"query":"My RK3588 service uses rknn_create_mem_from_fd after RGA resize, but input stride corruption appears after upgrading librknnrt. Audit the DMA-BUF layout and header compatibility.","should_trigger":true},
+  {"query":"Convert this YOLOv8 ONNX model to RKNN for an RK3568 board and diagnose the INT8 accuracy drop.","should_trigger":true},
+  {"query":"rknn_init returns an incompatible precompile model error on our RK3576 image; compare Toolkit2 and Runtime evidence.","should_trigger":true},
+  {"query":"Our Rockchip MPP decoder hands frames to RGA and then RKNN. CPU usage is high even though the team calls it zero-copy.","should_trigger":true},
+  {"query":"Please review all duplicated CMakeLists and rknn_model.cpp variants for size_with_stride compatibility on RK3568 and RK3588.","should_trigger":true},
+  {"query":"The RK3588 daemon sometimes reboots the board after dynamic resolution changes. Check MPP, RGA, RKNN buffer lifetime and bounds.","should_trigger":true},
+  {"query":"How should I schedule detector and classifier RKNN contexts across the available NPU cores on this RK3588 BSP?","should_trigger":true},
+  {"query":"Toolkit2 warns about Gather and Where while converting a transformer vision model for RK3576. Determine actual operator behavior.","should_trigger":true},
+  {"query":"We import V4L2 dma-bufs into librga on Rockchip and bind the result with rknn_set_io_mem; validate cache synchronization.","should_trigger":true},
+  {"query":"Run a full service-crash safety audit of this RKNN/RGA/MPP C++ repository, including overflow and resource exhaustion.","should_trigger":true},
+  {"query":"An Ascend 310 application using DVPP and ACL crashes when an FP32 tensor is copied to device memory.","should_trigger":false},
+  {"query":"My CUDA TensorRT engine has a dynamic-shape binding error and an illegal memory access.","should_trigger":false},
+  {"query":"Review this generic C++ image server for integer overflow and out-of-bounds writes; it does not use Rockchip hardware.","should_trigger":false},
+  {"query":"Explain Linux DMA-BUF synchronization between a generic DRM driver and a V4L2 camera.","should_trigger":false},
+  {"query":"Convert an ONNX model to OpenVINO INT8 for an Intel NPU.","should_trigger":false},
+  {"query":"My Raspberry Pi service uses libcamera and OpenCV; reduce memcpy and CPU usage.","should_trigger":false},
+  {"query":"Can you debug an RK4 Runge-Kutta implementation that produces NaNs?","should_trigger":false},
+  {"query":"Analyze an Android Java camera application that happens to run on a Rockchip tablet but does not use RKNN, RGA, or MPP.","should_trigger":false},
+  {"query":"Optimize a PyTorch model's FP32 training loop on an NVIDIA GPU before ONNX export.","should_trigger":false},
+  {"query":"Audit a generic GStreamer pipeline for latency; the target platform and hardware accelerators are not known.","should_trigger":false}
+]

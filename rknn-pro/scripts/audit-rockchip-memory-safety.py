@@ -9,6 +9,8 @@ import argparse
 import json
 import os
 import re
+import shutil
+import subprocess
 import sys
 from collections import Counter
 from dataclasses import asdict, dataclass
@@ -102,11 +104,82 @@ def parse_args():
     parser.add_argument("--include-generated", action="store_true")
     parser.add_argument("--include-tests-examples", action="store_true")
     parser.add_argument("--exclude", action="append", default=[], help="extra path component to exclude")
+    parser.add_argument(
+        "--preprocess", "-E", action="store_true",
+        help="expand macros with GCC before scanning (improves detection in macro-heavy code)",
+    )
+    parser.add_argument(
+        "--preprocess-include", "-I", action="append", default=[], metavar="DIR",
+        help="include directory passed to GCC as -I during --preprocess (repeatable); "
+             "without the project's include paths most real sources fail to preprocess "
+             "and fall back to raw scanning",
+    )
+    parser.add_argument(
+        "--cross-prefix", default="",
+        help="cross-compiler prefix (e.g., 'aarch64-linux-gnu-') for --preprocess",
+    )
     return parser.parse_args()
+
+
+# Suffixes eligible for GCC macro preprocessing.
+_PREPROCESS_SUFFIXES = {".c", ".cc", ".cpp", ".cxx", ".h", ".hh", ".hpp", ".hxx"}
+LINE_MARKER_RE = re.compile(r'^\s*#\s+(?P<line>\d+)\s+"(?P<path>[^"]+)"(?:\s+.*)?$')
 
 
 def is_source(path):
     return path.name in SOURCE_NAMES or path.suffix.lower() in SOURCE_SUFFIXES
+
+
+def extract_primary_source(preprocessed, filepath):
+    """Keep expanded lines owned by filepath and preserve their original line numbers."""
+    target = filepath.resolve()
+    current_path = None
+    current_line = 1
+    kept_lines = []
+    line_map = []
+
+    for line in preprocessed.splitlines():
+        marker = LINE_MARKER_RE.match(line)
+        if marker:
+            marker_path = marker.group("path")
+            current_line = int(marker.group("line"))
+            if marker_path.startswith("<"):
+                current_path = None
+            else:
+                try:
+                    current_path = Path(marker_path).resolve()
+                except OSError:
+                    current_path = None
+            continue
+
+        if current_path == target:
+            kept_lines.append(line)
+            line_map.append(current_line)
+        current_line += 1
+
+    if not kept_lines:
+        return None
+    return "\n".join(kept_lines), line_map
+
+
+def preprocess_file(filepath, cross_prefix="", include_dirs=()):
+    """Expand macros while excluding included-header bodies and retaining source line mapping."""
+    gcc = f"{cross_prefix}gcc"
+    if not shutil.which(gcc):
+        return None
+    try:
+        cmd = [gcc, "-E"]
+        cmd.extend(f"-I{directory}" for directory in include_dirs)
+        cmd.append(str(filepath))
+        result = subprocess.run(
+            cmd,
+            capture_output=True, text=True, timeout=10,
+        )
+        if result.returncode == 0:
+            return extract_primary_source(result.stdout, filepath)
+    except (subprocess.TimeoutExpired, OSError):
+        pass
+    return None
 
 
 def exclusion_reason(path, include_third_party, include_generated, include_tests_examples, extra):
@@ -254,6 +327,13 @@ def line_number(text, pos):
     return text.count("\n", 0, pos) + 1
 
 
+def source_line_number(text, pos, line_map=None):
+    generated_line = line_number(text, pos)
+    if line_map and generated_line <= len(line_map):
+        return line_map[generated_line - 1]
+    return generated_line
+
+
 def compact(value, limit=240):
     value = re.sub(r"\s+", " ", value).strip()
     return value if len(value) <= limit else value[:limit - 3] + "..."
@@ -283,7 +363,7 @@ def add(findings, rule_id, priority, category, title, rel, line, evidence, reaso
     ))
 
 
-def scan_file(rel, text, inventory, findings):
+def scan_file(rel, text, inventory, findings, line_map=None):
     masked = mask_c_like(text)
     calls = list(iter_calls(text, masked))
     call_counts = Counter(name for name, *_ in calls)
@@ -291,7 +371,7 @@ def scan_file(rel, text, inventory, findings):
 
     for name, start, end, raw_args, masked_args in calls:
         args = split_args(raw_args, masked_args)
-        line = line_number(text, start)
+        line = source_line_number(text, start, line_map)
         evidence = text[start:end]
 
         if name in UNSAFE_STRING_APIS:
@@ -367,7 +447,7 @@ def scan_file(rel, text, inventory, findings):
                 "Log or aggregate cleanup failures where the API contract makes them actionable; keep cleanup idempotent.")
 
     if any(call_counts[name] for name in RGA_OP_APIS) and call_counts["imcheck"] == 0:
-        first = min(line_number(text, start) for name, start, *_ in calls if name in RGA_OP_APIS)
+        first = min(source_line_number(text, start, line_map) for name, start, *_ in calls if name in RGA_OP_APIS)
         add(findings, "RGA003", "high", "rga-validation", "RGA operations in file have no imcheck call", rel,
             first, "RGA operation(s) without imcheck in the same translation unit",
             "Invalid rectangles, formats, strides, and hardware restrictions may reach the driver.",
@@ -388,31 +468,49 @@ def scan_file(rel, text, inventory, findings):
                 "The release may be cross-file, but leaks and shutdown use-after-free require explicit ownership tracing.",
                 "Follow every returned object through success, partial failure, reload, and shutdown paths.")
 
+    # Check for DMA-BUF file descriptor opening without close
+    # (matches open("/dev/dma_heap/system", ...) and similar heap-node paths)
+    if re.search(r'open\s*\(\s*"/dev/(?:dma_heap|ion)', text):
+        if call_counts["close"] == 0:
+            add(findings, "LIFE005", "high", "resource-leak", "DMA-BUF heap opened without explicit close in file",
+                rel, 1, "open('/dev/dma_heap...') present but close=0",
+                "Unclosed DMA heap file descriptors can cause kernel FD table exhaustion during long service runs.",
+                "Ensure every open dma_heap or ion file descriptor is closed after buffer allocation or during cleanup.")
+
+    # Same-file threads plus rknn_run need context-ownership tracing; syntax cannot prove sharing.
+    if call_counts["rknn_run"] >= 1 and ("std::thread" in text or "pthread_create" in text):
+        if not re.search(r"std::mutex|pthread_mutex_t|std::lock_guard|std::unique_lock", text):
+            add(findings, "RKNN003", "medium", "concurrency-hazard", "Threaded RKNN execution needs per-context ownership proof",
+                rel, 1, "pthread_create/std::thread and rknn_run present without mutex",
+                "If threads share one context without a version-supported contract, calls can race; separate contexts in the same file are not a defect.",
+                "Trace the context passed to each worker. Use one owned context per worker/pool lease or serialize access according to the deployed Runtime contract.")
+
+
     if "RKNN_FLAG_DISABLE_FLUSH_INPUT_MEM_CACHE" in text or "RKNN_FLAG_DISABLE_FLUSH_OUTPUT_MEM_CACHE" in text:
         if call_counts["rknn_mem_sync"] == 0:
-            line = line_number(text, text.find("RKNN_FLAG_DISABLE_FLUSH"))
+            line = source_line_number(text, text.find("RKNN_FLAG_DISABLE_FLUSH"), line_map)
             add(findings, "SYNC001", "high", "cache-coherency", "RKNN automatic cache maintenance disabled without local mem sync",
                 rel, line, "RKNN_FLAG_DISABLE_FLUSH_*_MEM_CACHE",
                 "CPU/device access can observe stale data or overwrite unsynchronized cache lines.",
                 "Trace synchronization across callers and add the required rknn_mem_sync direction before access.")
 
     if "mpp_frame_get_info_change" in text and "MPP_DEC_SET_INFO_CHANGE_READY" not in text:
-        line = line_number(text, text.find("mpp_frame_get_info_change"))
+        line = source_line_number(text, text.find("mpp_frame_get_info_change"), line_map)
         add(findings, "MPP001", "high", "mpp-reconfigure", "MPP info-change handling may be incomplete", rel,
             line, "mpp_frame_get_info_change without MPP_DEC_SET_INFO_CHANGE_READY in file",
             "Continuing with old strides or buffers after resolution change can overrun or stall the decoder.",
             "Trace the caller; rebuild the buffer group from returned strides before acknowledging info-change.")
 
     if "mpp_buffer_group_get_internal" in text and "mpp_buffer_group_limit_config" not in text:
-        line = line_number(text, text.find("mpp_buffer_group_get_internal"))
+        line = source_line_number(text, text.find("mpp_buffer_group_get_internal"), line_map)
         add(findings, "MPP002", "medium", "resource-exhaustion", "MPP internal buffer group has no visible limit",
             rel, line, "mpp_buffer_group_get_internal without mpp_buffer_group_limit_config in file",
             "Decoder memory can grow beyond service limits depending on mode and retained frames.",
             "Trace group configuration and frame retention; set size/count limits or document bounded ownership.")
 
     if call_counts["mmap"] and "MAP_FAILED" not in text:
-        first = min(line_number(text, start) for name, start, *_ in calls if name == "mmap")
-        add(findings, "LIFE005", "high", "mapping-lifetime", "mmap result has no visible MAP_FAILED check",
+        first = min(source_line_number(text, start, line_map) for name, start, *_ in calls if name == "mmap")
+        add(findings, "LIFE006", "high", "mapping-lifetime", "mmap result has no visible MAP_FAILED check",
             rel, first, "mmap call(s) without MAP_FAILED in the same file",
             "Using `(void*)-1` as a valid mapping can crash the process or pass an invalid address to a driver.",
             "Trace wrapper/caller validation; reject MAP_FAILED before storing, copying, or hardware submission.")
@@ -425,14 +523,14 @@ def scan_file(rel, text, inventory, findings):
         nearby = masked[max(0, align_match.start() - 300):align_match.end() + 300]
         if not re.search(r"overflow|numeric_limits|__builtin_add_overflow|AlignUpChecked|checked", nearby, re.I):
             add(findings, "MEM004", "medium", "integer-overflow", "Alignment expression needs overflow proof",
-                rel, line_number(text, align_match.start()), compact(text[align_match.start():align_match.end()]),
+                rel, source_line_number(text, align_match.start(), line_map), compact(text[align_match.start():align_match.end()]),
                 "Adding alignment minus one can wrap before rounding, producing an undersized allocation.",
                 "Use a checked align-up helper and reject zero/non-power-of-two alignment when required.")
 
     if re.search(r"\.detach\s*\(|pthread_detach\s*\(", masked):
         pos = re.search(r"\.detach\s*\(|pthread_detach\s*\(", masked).start()
         add(findings, "CONC001", "high", "concurrency-lifetime", "Detached worker needs hardware-object lifetime proof",
-            rel, line_number(text, pos), compact(text[pos:pos + 160]),
+            rel, source_line_number(text, pos, line_map), compact(text[pos:pos + 160]),
             "A detached worker can outlive RKNN contexts, RGA/MPP buffers, callbacks, or plugin code.",
             "Use an owned worker with cancellation and join, or prove captured resources outlive the process.")
 
@@ -445,7 +543,7 @@ def scan_file(rel, text, inventory, findings):
         if re.search(r"/(?:Users|home|usr/local)/[^\s\"')]+(?:rknn|rga|mpp)", text, re.I):
             pos = re.search(r"/(?:Users|home|usr/local)/[^\s\"')]+(?:rknn|rga|mpp)", text, re.I).start()
             add(findings, "BUILD002", "medium", "build-abi", "Hard-coded Rockchip SDK path can select the wrong ABI",
-                rel, line_number(text, pos), compact(text[pos:pos + 180]),
+                rel, source_line_number(text, pos, line_map), compact(text[pos:pos + 180]),
                 "Machine-specific include/library paths can silently mix headers, sysroots, and runtime libraries.",
                 "Resolve SDK roots from the selected toolchain/target and verify the final compile/link commands.")
 
@@ -488,7 +586,7 @@ def render_markdown(root, files, skipped, inventory, findings, unreadable, args)
             f"- Location: `{item.path}:{item.line}`",
             f"- Confidence: `{item.confidence}`",
             f"- Category: `{item.category}`",
-            f"- Evidence: `{item.evidence.replace('`', "'")}`",
+            f"- Evidence: `{item.evidence.replace('`', ' ') }`",
             f"- Why review: {item.reason}",
             f"- Required review: {item.review}", "",
         ])
@@ -517,13 +615,38 @@ def main():
     inventory = Counter()
     findings = []
     unreadable = 0
+    preprocess_ok = 0
+    preprocess_fail = 0
+    preprocess_skip = 0
     for rel in files:
         try:
             text = (root / rel).read_text(encoding="utf-8", errors="replace")
         except OSError:
             unreadable += 1
             continue
-        scan_file(rel, text, inventory, findings)
+
+        scan_text = text
+        line_map = None
+        if args.preprocess and rel.suffix.lower() in _PREPROCESS_SUFFIXES:
+            expanded = preprocess_file(root / rel, args.cross_prefix, args.preprocess_include)
+            if expanded is not None:
+                scan_text, line_map = expanded
+                preprocess_ok += 1
+            else:
+                preprocess_fail += 1
+                print(f"warning: preprocessing failed for {rel}, scanning raw source", file=sys.stderr)
+        elif args.preprocess:
+            preprocess_skip += 1
+
+        scan_file(rel, scan_text, inventory, findings, line_map=line_map)
+
+    if args.preprocess:
+        total = preprocess_ok + preprocess_fail + preprocess_skip
+        print(
+            f"Preprocessed {preprocess_ok}/{total} files successfully "
+            f"({preprocess_fail} failed, used raw source; {preprocess_skip} skipped, not C/C++)",
+            file=sys.stderr,
+        )
 
     deduped = []
     seen = set()
@@ -539,6 +662,8 @@ def main():
             "coverage": {
                 "files_scanned": len(files),
                 "unreadable": unreadable,
+                "preprocessed": preprocess_ok if args.preprocess else None,
+                "preprocess_failed": preprocess_fail if args.preprocess else None,
                 "skipped": dict(skipped),
                 "include_third_party": args.include_third_party,
                 "include_generated": args.include_generated,

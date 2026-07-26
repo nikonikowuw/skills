@@ -132,10 +132,24 @@ Resize image from `src` to `dst`.
 ### `imcrop`
 
 ```c
-IM_STATUS imcrop(const rga_buffer_t src, rga_buffer_t dst, im_rect rect, int interpolation, int sync);
+IM_STATUS imcrop(const rga_buffer_t src, rga_buffer_t dst, im_rect rect, int sync);
 ```
 
-Crop a rectangle from source. `im_rect = {x, y, w, h}`. If dst dimensions differ from rect, auto-resize.
+Crop a rectangle from source. `im_rect = {x, y, w, h}`. There is no interpolation parameter, and
+`imcrop` does **not** resize — the dst geometry must match the rect. For one-pass crop + scale
+(e.g., detection box → classifier input), use `improcess` with explicit src/dst rects.
+
+### `improcess`
+
+```c
+IM_STATUS improcess(rga_buffer_t src, rga_buffer_t dst, rga_buffer_t pat,
+                    im_rect srect, im_rect drect, im_rect prect, int usage);
+```
+
+Combined operation driven by rects and usage flags: `srect` selects the source region, which is
+scaled/converted into `drect` of the destination. Pass empty (`{}`) `pat`/`prect` when no pattern
+blend is used, and `IM_SYNC` in `usage` for synchronous execution. Run `imcheck` with the same
+rects first.
 
 ### `imcvtcolor`
 
@@ -153,7 +167,7 @@ Common conversions:
 ### `imflip`
 
 ```c
-IM_STATUS imflip(const rga_buffer_t src, rga_buffer_t dst, int mode);
+IM_STATUS imflip(const rga_buffer_t src, rga_buffer_t dst, int mode, int sync);
 ```
 
 | `mode` | Description |
@@ -189,10 +203,12 @@ Translate (shift) image by `dx`, `dy` pixels.
 ### `imcheck`
 
 ```c
-IM_STATUS imcheck(const rga_buffer_t src, rga_buffer_t dst, const im_rect *src_rect, const im_rect *dst_rect, int mode);
+IM_STATUS imcheck(const rga_buffer_t src, const rga_buffer_t dst, const im_rect src_rect, const im_rect dst_rect, int mode_usage);
 ```
 
-Validate RGA parameters **before** calling the operation. Returns `IM_STATUS_SUCCESS` if valid.
+Validate RGA parameters **before** calling the operation. `im_rect` arguments are passed **by
+value**, not by pointer; `mode_usage` defaults to 0 in the C++ declaration. Success is
+`IM_STATUS_NOERROR`.
 
 **Always call `imcheck` before production operations** — RGA returns opaque errors on invalid parameters.
 This is especially important when buffer dimensions or formats come from runtime data.
@@ -281,12 +297,12 @@ rga_buffer_t dst = wrapbuffer_handle(dst_handle, dst_w, dst_h,
 
 // === Per frame ===
 
-// Validate
+// Validate (im_rect by value; success is IM_STATUS_NOERROR)
 im_rect src_rect = {0, 0, src_w, src_h};
 im_rect dst_rect = {0, 0, dst_w, dst_h};
-IM_STATUS ret = imcheck(src, dst, &src_rect, &dst_rect, IM_CVTCOLOR);
-if (ret != IM_STATUS_SUCCESS) {
-    printf("RGA imcheck failed: %d\n", ret);
+IM_STATUS ret = imcheck(src, dst, src_rect, dst_rect);
+if (ret != IM_STATUS_NOERROR) {
+    printf("RGA imcheck failed: %s\n", imStrError(ret));
 }
 
 // Convert NV12 -> RGB888 + resize to 640x640

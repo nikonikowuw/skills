@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import argparse
+import hashlib
 import re
 import sys
 from pathlib import Path
@@ -28,13 +29,28 @@ NODE_PATTERN = re.compile(r"/dev/(?:media\d+|video\d+|rga|dri/renderD\d+)")
 HEADER_PATTERN = re.compile(r"(?:(?:-I)|include_directories\(|target_include_directories\()[^)\\\n]*", re.IGNORECASE)
 LIBROOT_PATTERN = re.compile(r"(?:(?:-L)|link_directories\(|target_link_directories\()[^)\\\n]*", re.IGNORECASE)
 SDK_PATH_PATTERN = re.compile(r"(/[^\s'\"()]*?(?:rknn|rockchip|rga|mpp|sdk)[^\s'\"()]*)", re.IGNORECASE)
+ABS_PATH_PATTERN = re.compile(r"/[^\s'\"()]+")
+VERSION_LINE_PATTERN = re.compile(
+    r"^.*(?:api\s+version|driver\s+version|librknnrt|rknnrt\s+version|rga_api|mpp\s+version).*$",
+    re.IGNORECASE | re.MULTILINE,
+)
 DL_PATTERN = re.compile(r"\bdlopen\b|RTLD_", re.IGNORECASE)
 OS_RELEASE_PATTERN = re.compile(r'PRETTY_NAME="?([^"\n]+)"?')
 COMPATIBLE_PATTERN = re.compile(r"(?:^|\n)(?:rockchip,[^\x00\n]+(?:\x00[^\x00\n]+)*)")
 KERNEL_PATTERN = re.compile(r"^Linux\s+.+", re.MULTILINE)
 SOC_PATTERN = re.compile(r"\b(rk(?:3576|3568|3566|3588|3588s|3562|3562j|3562g))\b", re.IGNORECASE)
-RGA_DRIVER_PATTERN = re.compile(r"rga[^:\n]*version[^:\n]*[:\s]+([^\n]+)", re.IGNORECASE)
-BOARD_SN_PATTERN = re.compile(r"Serial\s*[\s:]+([a-fA-F0-9]{8,})", re.IGNORECASE)
+RGA_DRIVER_PATTERN = re.compile(
+    r"^(?:rga(?:\s+driver)?|rga\d*_driver)\s+version[ \t]*:[ \t]*([^\r\n]+)$",
+    re.IGNORECASE | re.MULTILINE,
+)
+DEVICE_ID_PATTERN = re.compile(
+    r"^(?:Board\s+Serial|Serial|Device\s+ID)\s*:\s*([^\s\x00]+)",
+    re.IGNORECASE | re.MULTILINE,
+)
+DIAG_BARE_DEVICE_ID_PATTERN = re.compile(
+    r"^\$\s+board serial candidates\s*$\n(?P<device_id>[^\s\x00]+)\s*$",
+    re.IGNORECASE | re.MULTILINE,
+)
 RKNN_MODEL_PATTERN = re.compile(r"(?P<path>[^\s'\"()]+\.rknn)\b", re.IGNORECASE)
 CONTEXT_HEADER_PATTERN = re.compile(r"^==\s*Device Context:\s*(?P<label>.+?)\s*==\s*$", re.IGNORECASE | re.MULTILINE)
 
@@ -125,6 +141,14 @@ def detect_compatible(text):
     return match.group(0).replace("\x00", ", ").strip()
 
 
+def detect_device_id(text):
+    labeled = first_match(DEVICE_ID_PATTERN, text)
+    if labeled != "unknown":
+        return labeled
+    match = DIAG_BARE_DEVICE_ID_PATTERN.search(text)
+    return match.group("device_id").strip() if match else "unknown"
+
+
 def detect_libraries(text):
     result = {}
     for name, pattern in LIB_PATTERNS.items():
@@ -146,19 +170,45 @@ def detect_runtime_loading(text):
 
 
 def detect_library_roots(text):
-    roots = collect_unique(LIBROOT_PATTERN, text)
-    roots.extend(path for path in collect_unique(SDK_PATH_PATTERN, text) if "/lib" in path.lower())
-    return roots[:6]
+    roots = []
+    for directive in collect_unique(LIBROOT_PATTERN, text):
+        roots.extend(collect_unique(ABS_PATH_PATTERN, directive))
+    for path in collect_unique(SDK_PATH_PATTERN, text):
+        if "/lib" not in path.lower():
+            continue
+        cleaned = path.rstrip(",;")
+        if re.search(r"\.so(?:\.[^/]*)?$", cleaned, re.IGNORECASE):
+            cleaned = str(Path(cleaned).parent)
+        roots.append(cleaned)
+    return list(dict.fromkeys(roots))[:6]
 
 
 def detect_header_roots(text):
-    roots = collect_unique(HEADER_PATTERN, text)
+    roots = []
+    for directive in collect_unique(HEADER_PATTERN, text):
+        roots.extend(collect_unique(ABS_PATH_PATTERN, directive))
     roots.extend(path for path in collect_unique(SDK_PATH_PATTERN, text) if "/include" in path.lower())
-    return roots[:6]
+    return list(dict.fromkeys(roots))[:6]
 
 
 def summarize_list(values):
     return ", ".join(values) if values else "unknown"
+
+
+def environment_fingerprint(text):
+    fields = [
+        detect_soc(text),
+        first_match(KERNEL_PATTERN, text),
+        first_match(OS_RELEASE_PATTERN, text),
+        first_match(RGA_DRIVER_PATTERN, text),
+        *detect_libraries(text)["librga"],
+        *detect_libraries(text)["librknnrt"],
+        *detect_libraries(text)["libmpp"],
+        *detect_header_roots(text),
+        *collect_unique(VERSION_LINE_PATTERN, text),
+    ]
+    normalized = "\n".join(re.sub(r"\s+", " ", field).strip() for field in fields)
+    return hashlib.sha256(normalized.encode("utf-8")).hexdigest()[:8]
 
 
 def summarize_context(label, text):
@@ -175,6 +225,8 @@ def summarize_context(label, text):
 
     return [
         f"### {label}",
+        f"- Device identifier: {detect_device_id(text)}",
+        f"- Environment fingerprint: {environment_fingerprint(text)}",
         f"- SoC: {detect_soc(text)}",
         f"- Board model: {detect_board_model(text)}",
         f"- Compatible string: {detect_compatible(text)}",
@@ -198,7 +250,8 @@ def summarize_context(label, text):
 def build_baseline(text):
     libraries = detect_libraries(text)
     symbols = detect_symbols(text)
-    board_sn = first_match(BOARD_SN_PATTERN, text)
+    device_id = detect_device_id(text)
+    fingerprint = environment_fingerprint(text)
     modules = [
         value for value in collect_unique(MODULE_PATTERN, text, 1)
         if "," not in value and not value.startswith("rga_api")
@@ -221,8 +274,8 @@ def build_baseline(text):
     rga_driver = first_match(RGA_DRIVER_PATTERN, text)
 
     open_risks = []
-    if board_sn == "unknown":
-        open_risks.append("Board serial number not found. Run 'cat /proc/cpuinfo | grep Serial' to get board_serial.")
+    if device_id == "unknown":
+        open_risks.append("No device identifier found. Record a board serial, asset tag, or stable user-provided label when hardware identity matters.")
     if board_model == "unknown":
         open_risks.append("Board model not identified from pasted evidence.")
     if kernel == "unknown":
@@ -249,7 +302,8 @@ def build_baseline(text):
         "- Aggregated discovery sections below are not implementation context when multiple boards, SoCs, BSPs, or library roots exist; use the device-scoped runtime context section.",
         "",
         "Board baseline",
-        f"- Board serial number: {board_sn}  (unique hardware identifier; context key)",
+        f"- Device identifier: {device_id}",
+        f"- Environment fingerprint: {fingerprint}",
         f"- SoC: {soc}",
         f"- Board model: {board_model}",
         f"- Compatible string: {compatible}",
@@ -324,7 +378,7 @@ def main():
     parser = argparse.ArgumentParser(description="Render a Rockchip project baseline from pasted device evidence.")
     parser.add_argument("input", nargs="?", help="Optional text file containing pasted device evidence. Reads stdin if omitted.")
     parser.add_argument("-o", "--output", help="Optional markdown output file path.")
-    parser.add_argument("--write-default", action="store_true", help="Write to the recommended project path. Prefers .agent-context/rockchip-baseline.md, then docs/rockchip-baseline.md.")
+    parser.add_argument("--write-default", action="store_true", help="Write to the recommended project path. Prefers .agents/rknn-context.md, then .agent-context/rockchip-baseline.md, then docs/rockchip-baseline.md.")
     args = parser.parse_args()
 
     text = load_text(args.input)

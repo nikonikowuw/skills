@@ -13,6 +13,7 @@ The Rockchip `rknn-toolkit2` README explicitly describes this split.
 
 The `rknn-toolkit2` README lists these relevant supported platforms:
 
+- `RK3588 Series`
 - `RK3576 Series`
 - `RK3566/RK3568 Series`
 

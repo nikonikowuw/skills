@@ -8,7 +8,7 @@ Use this reference whenever a project or conversation mentions more than one Roc
 
 Treat each target runtime as an indivisible context:
 
-`board model + SoC + kernel/BSP + driver versions + userspace .so set + headers + exported symbols + container or rootfs + RKNN artifact`
+`device ID or label + board model + SoC + kernel/BSP + driver versions + userspace .so set + headers + exported symbols + container or rootfs + RKNN artifact`
 
 Do not carry a library path, exported symbol, RGA capability, MPP memory mode, RKNN runtime feature, or performance conclusion from one context into another unless evidence explicitly proves they are the same.
 
@@ -17,14 +17,14 @@ Do not carry a library path, exported symbol, RGA capability, MPP memory mode, R
 Assign a short context ID before implementation:
 
 ```text
-<soc-or-board>-<rootfs-or-container>-<purpose>
+<device-id-or-label>-<soc>-<environment-fingerprint>-<purpose>
 ```
 
 Examples:
 
-- `RK3568-EVB1-bookworm-video-infer`
-- `RK3576-vendor-BSP-camera-pipeline`
-- `RK3588-container-demo`
+- `camera-01-RK3568-a13f42c9-video-infer`
+- `lab-rk3576-RK3576-42e91b0c-camera-pipeline`
+- `demo-RK3588-91b72fe0-container`
 
 When reporting or handing off context, put the active ID first.
 
@@ -32,7 +32,8 @@ When reporting or handing off context, put the active ID first.
 
 For each device-scoped context, record:
 
-- **Board serial number** (`board_serial`) — mandatory, unique per board. Get via `cat /proc/cpuinfo | grep Serial`.
+- Device identifier: board serial when available, otherwise a stable asset tag or user-provided label.
+- Environment fingerprint derived from the observed software/runtime fields below.
 - Board model and SoC.
 - Kernel, BSP, and rootfs provenance.
 - RGA driver version and debug node evidence.
@@ -64,8 +65,9 @@ If the user asks for a generic change that affects all boards, design an explici
 Use this shape when passing context to another agent or future turn:
 
 ```text
-Active Rockchip runtime context: 0123456789abcdef-RK3568-EVB1-bookworm-video-infer
-- Board serial number: 0123456789abcdef
+Active Rockchip runtime context: camera-01-RK3568-a13f42c9-video-infer
+- Device identifier: camera-01 (board serial unavailable)
+- Environment fingerprint: a13f42c9
 - Board/SoC: Rockchip RK3568 EVB1, RK3568
 - Kernel/BSP: <observed values or unknown>
 - RGA driver: <version or unknown>

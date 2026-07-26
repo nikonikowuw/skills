@@ -106,7 +106,7 @@ For each experiment, record:
 
 ## Fast Triage Order
 
-1. Validate versions with [version-audit.md](/Users/niko/.codex/skills/rockchip-performance/references/version-audit.md).
+1. Validate versions with [version-audit.md](version-audit.md).
 2. Check whether the alleged zero-copy path still maps or repacks frames on CPU.
 3. Check RGA alignment, allocator type, and import pattern.
 4. Check MPP memory mode and downstream buffer ownership.

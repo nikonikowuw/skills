@@ -322,6 +322,11 @@ Run the scanner's default production pass first, then run a separate
 `--include-tests-examples` pass when diagnostic tools, converters, benchmarks, test binaries, or
 examples are deployed to a board, run as root, or exercise the same driver-facing code.
 
+For macro-heavy C/C++, add `--preprocess` and every project include root with repeated
+`--preprocess-include DIR`. The scanner filters included-header bodies and maps expanded calls back
+to the owning source line. Review the reported preprocessing success/fallback counts; a raw-source
+fallback can miss sensitive APIs hidden entirely behind macros.
+
 ## Board Validation
 
 Start with the read-only collector:

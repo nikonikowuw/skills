@@ -1,8 +1,13 @@
 #!/usr/bin/env bash
 set -euo pipefail
+umask 077
 
 out_dir="${1:-rockchip-debug-$(date +%Y%m%d-%H%M%S)}"
-mkdir -p "$out_dir"
+if [[ -e "$out_dir" ]]; then
+  echo "refusing to overwrite existing debug path: $out_dir" >&2
+  exit 1
+fi
+mkdir -p -- "$out_dir"
 
 capture() {
   local name="$1"

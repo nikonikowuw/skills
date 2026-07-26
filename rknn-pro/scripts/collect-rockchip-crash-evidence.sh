@@ -1,9 +1,19 @@
 #!/usr/bin/env bash
 set -euo pipefail
+umask 077
 
 pid="${1:-}"
 out_dir="${2:-rockchip-crash-evidence-$(date +%Y%m%d-%H%M%S)}"
-mkdir -p "$out_dir"
+
+if [[ -n "$pid" && ! "$pid" =~ ^[0-9]+$ ]]; then
+  echo "PID must be numeric: $pid" >&2
+  exit 2
+fi
+if [[ -e "$out_dir" ]]; then
+  echo "refusing to overwrite existing evidence path: $out_dir" >&2
+  exit 1
+fi
+mkdir -p -- "$out_dir"
 
 capture() {
   local name="$1"
@@ -52,3 +62,4 @@ capture rockchip_libraries sh -lc "find /usr /usr/local -maxdepth 5 \
 
 echo "Read-only evidence written to: $out_dir"
 echo "No debugfs/procfs controls were modified."
+echo "The bundle can contain process paths and device identifiers; keep it access-restricted."
