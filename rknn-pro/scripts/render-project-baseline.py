@@ -29,7 +29,7 @@ MODULE_PATTERN = re.compile(r"^(rockchip\S*|rga\S*|mpp\S*|vcodec\S*|rknpu\S*|iep
 NODE_PATTERN = re.compile(r"/dev/(?:media\d+|video\d+|rga|dri/renderD\d+)")
 HEADER_PATTERN = re.compile(r"(?:(?:-I)|include_directories\(|target_include_directories\()[^)\\\n]*", re.IGNORECASE)
 LIBROOT_PATTERN = re.compile(r"(?:(?:-L)|link_directories\(|target_link_directories\()[^)\\\n]*", re.IGNORECASE)
-SDK_PATH_PATTERN = re.compile(r"(/[^\s'\"()]*?(?:rknn|rockchip|rga|mpp|sdk)[^\s'\"()]*)", re.IGNORECASE)
+SDK_PATH_PATTERN = re.compile(r"(/[^\s'\"()]*?(?:rknn|rockchip|rga|mpp|sdk|include)[^\s'\"()]*(?:\.h|\.hpp|\.so)?)", re.IGNORECASE)
 ABS_PATH_PATTERN = re.compile(r"/[^\s'\"()]+")
 VERSION_LINE_PATTERN = re.compile(
     r"^.*(?:api\s+version|driver\s+version|librknnrt|rknnrt\s+version|rga_api|mpp\s+version).*$",
@@ -209,12 +209,20 @@ def summarize_list(values):
     return ", ".join(values) if values else "unknown"
 
 
+
+def detect_npu_driver(text):
+    match = re.search(r"(?:RKNPU|rknpu|NPU)[^\n]*version[^\n]+", text, re.IGNORECASE)
+    if match:
+        return match.group(0).strip()
+    return "unknown"
+
 def environment_fingerprint(text):
     fields = [
         detect_soc(text),
         first_match(KERNEL_PATTERN, text),
         first_match(OS_RELEASE_PATTERN, text),
         first_match(RGA_DRIVER_PATTERN, text),
+        detect_npu_driver(text),
         *detect_libraries(text)["librga"],
         *detect_libraries(text)["librknnrt"],
         *detect_libraries(text)["libmpp"],
@@ -247,6 +255,7 @@ def summarize_context(label, text):
         f"- RGA driver: {first_match(RGA_DRIVER_PATTERN, text)}",
         f"- V4L2 or media nodes: {summarize_list(media_nodes)}",
         f"- DRM or display nodes: {summarize_list(drm_nodes)}",
+        f"- NPU driver: {detect_npu_driver(text)}",
         f"- Other relevant modules: {summarize_list(modules)}",
         f"- librga: {summarize_list(libraries['librga'])}",
         f"- librknnrt: {summarize_list(libraries['librknnrt'])}",
@@ -331,6 +340,7 @@ def build_baseline(text):
         f"- RGA driver: {rga_driver}",
         f"- V4L2 or media nodes: {summarize_list(media_nodes)}",
         f"- DRM or display nodes: {summarize_list(drm_nodes)}",
+        f"- NPU driver: {detect_npu_driver(text)}",
         f"- Other relevant modules: {summarize_list(modules)}",
         "",
         "Userspace library sightings",
