@@ -112,6 +112,7 @@ When board-specific facts matter or fingerprint mismatches:
 | [rknn-deployment.md](references/rknn-deployment.md) | Deployment strategies, PC-side vs board-side |
 
 ## Operating Rules
+- **Safety Stop**: Flag destructive commands (`rm -rf`, `git push --force`, `DROP TABLE`) before running scripts.
 - Treat the selected target headers and version-matched official examples as the API contract; bundled signatures are navigation aids.
 - Distinguish host dtype from graph precision. `RKNN_TENSOR_FLOAT32` or `want_float=1` does not prove FP32 NPU execution.
 - Never infer Toolkit2 normalization or INT8 graph precision from a `.rknn` filename, ONNX input dtype, host C buffer type, `pass_through`, `want_float`, or Runtime convenience conversion.
