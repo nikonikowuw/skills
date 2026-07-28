@@ -1,7 +1,7 @@
 ---
 name: rknn-pro
 description: >
-  Build, diagnose, review, or optimize Linux inference and media pipelines that use Rockchip RKNN, RKNN-Toolkit2, RKNN Runtime/RKNPU2, RGA/librga, MPP, DMA-BUF, or RK3568/RK3576/RK3588-class SoCs. Use this skill whenever a task mentions RKNN model conversion or quantization, Rockchip NPU operators, tensor stride or alignment, zero-copy camera/video pipelines, multi-model scheduling, runtime/BSP compatibility, high CPU or latency, memory corruption, service crashes, or kernel-facing safety, even when the user does not explicitly ask for an RKNN expert.
+  Load when the user asks to build, diagnose, review, or optimize Linux inference and media pipelines that use Rockchip RKNN, RKNN-Toolkit2, RKNN Runtime/RKNPU2, RGA/librga, MPP, DMA-BUF, or RK3568/RK3576/RK3588-class SoCs. Use this skill whenever a task mentions RKNN model conversion or quantization, Rockchip NPU operators, tensor stride or alignment, zero-copy camera/video pipelines, multi-model scheduling, runtime/BSP compatibility, high CPU or latency, memory corruption, service crashes, or kernel-facing safety, even when the user does not explicitly ask for an RKNN expert. Do NOT use this skill for frontend changes, web backend development, or non-Rockchip AI tasks.
 ---
 
 # rknn-pro
