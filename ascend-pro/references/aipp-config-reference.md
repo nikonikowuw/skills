@@ -14,6 +14,7 @@ Two modes:
 |---|---|---|---|
 | **Static** | At conversion, fixed | `--insert_op_conf` with `aipp_mode: static` | None |
 | **Dynamic** | At conversion (max bounds), fine-tuned at runtime | `--insert_op_conf` with `aipp_mode: dynamic` | `aclmdlSetInputAIPP()` |
+| **Dynamic V2** | CANN 8.0+ enhanced runtime dynamic mode | `--insert_op_conf` with `aipp_mode: dynamic_v2` | `acldvppAippCreateConfig()` / `aclmdlSetInputAIPP()` |
 
 ## Configuration File Template
 

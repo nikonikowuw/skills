@@ -33,9 +33,9 @@ def percentile(values, pct):
 
 
 def main():
-    if len(sys.argv) != 2:
+    if len(sys.argv) != 2 or sys.argv[1] in ("-h", "--help"):
         print("Usage: summarize-stage-latency.py <timing-log>")
-        return 1
+        return 0 if len(sys.argv) == 2 else 0
 
     samples = load_samples(sys.argv[1])
     if not samples:

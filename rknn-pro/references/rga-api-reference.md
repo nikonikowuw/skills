@@ -312,3 +312,54 @@ imresize(src, dst, 0, 0, INTER_LINEAR, 1);  // sync=1
 releasebuffer_handle(src_handle);
 releasebuffer_handle(dst_handle);
 ```
+
+---
+
+## Troubleshooting RGA Failures
+
+### RGA DMA-BUF lifecycle cascade failure
+
+**The single most common cause of sustained RGA crashes in production inference pipelines.**
+
+#### Quick diagnostic
+
+Check `/proc/interrupts` on the device:
+
+```bash
+grep rga2 /proc/interrupts | awk '{
+    total=0; for(i=3;i<=NF-2;i++) total+=$i;
+    for(i=3;i<=NF-2;i++) printf "  %s core %s: %s (%.1f%%)\n", $(NF), i-3, $i, ($i/total)*100
+}'
+```
+
+> If core 4 is >90% and core 8 is <10%, the **imbalance amplified the cascade failure** — fix the DMA-BUF lifecycle first, then the load balancing.
+
+#### Symptom → Root Cause Map
+
+| dmesg pattern | What it really means |
+|---|---|
+| `Cannot get dst channel buffer` | DMA-BUF fd was `close()`d before RGA finished with it. **Root trigger.** |
+| `failed to map buffer` | Kernel IOMMU cannot resolve the fd to physical pages. |
+| `abort! finished 0 failed 0 ...` | RGA pre-commit validation cancelled the job before hardware touched it. |
+| `job hardware has timeout` → `INTR[0x840700]` | IOMMU page fault caused hardware hang on the target core. |
+| `soft reset complete` | Kernel recovered the hung core. |
+| `no core match` | Scheduler has no available core — the one that handles 99% of jobs is in reset. |
+| `mpp_rkvdec2 timeout/resetting` | Decoder pipeline back-pressured because RGA is not consuming frames. |
+
+#### Code audit checklist
+
+- [ ] Are all `wrapbuffer_fd()` calls paired with a one-time `importbuffer_fd()` per buffer pool lifecycle?
+- [ ] Or does the code call `wrapbuffer_fd()` **every frame** without retaining the handle? (🚨 Red flag)
+- [ ] Is `importbuffer_fd()` called with the full stride-derived size, not just `width * height * bpp`?
+- [ ] Is `imcheck()` called before every `improcess`/`imresize`?
+- [ ] Does the destination DMA-BUF double as an NPU input buffer? If so, is there a sync fence?
+
+#### Fix summary
+
+```
+P0: importbuffer_fd() once per pool → wrapbuffer_handle() per frame → releasebuffer_handle() at shutdown
+P1: im_set_core_mask() to balance across all RGA2 cores
+P2: Validate dst buffer size and call imcheck() before every operation
+```
+
+See `known-crash-patterns.md` section "RGA DMA-BUF Lifecycle Cascade Failure" for the full diagnosis and code examples.

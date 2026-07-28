@@ -4,13 +4,14 @@ Detailed parameter descriptions, calling sequences, and constraints for AscendCL
 
 ## Device & Context Management
 
-### `aclrtSetDevice`
+### `aclrtSetDevice` / `aclrtSetDeviceWithoutContext`
 
 ```c
 aclError aclrtSetDevice(int32_t deviceId);
+aclError aclrtSetDeviceWithoutContext(int32_t deviceId); // CANN 7.0+
 ```
 
-Activates a physical device for the calling thread. Creates a default context. Must be called before any other ACL operation.
+Activates a physical device for the calling thread. `aclrtSetDevice` creates a default context; `aclrtSetDeviceWithoutContext` sets device without creating a default context for fine-grained multi-context management.
 
 - **deviceId**: 0-based index (check via `npu-smi info`)
 - Returns `ACL_SUCCESS` on success
@@ -35,13 +36,14 @@ Returns `ACL_DEVICE` (Ascend device runs inference) or `ACL_HOST` (host CPU only
 
 ## Memory Management
 
-### `aclrtMalloc`
+### `aclrtMalloc` / `aclrtMallocAlign32`
 
 ```c
 aclError aclrtMalloc(void **devPtr, size_t size, aclrtMemMallocPolicy policy);
+aclError aclrtMallocAlign32(void **devPtr, size_t size, aclrtMemMallocPolicy policy); // CANN 7.0+
 ```
 
-Allocates device memory. Memory must be freed with `aclrtFree`.
+Allocates device memory. `aclrtMallocAlign32` explicitly guarantees 32-byte alignment for hardware ops. Memory must be freed with `aclrtFree`.
 
 | Policy | Meaning |
 |---|---|
@@ -283,6 +285,24 @@ aclError aclError aclmdlSetDynamicHWSize(uint32_t modelId, aclmdlDataset *datase
 ```
 
 Set input resolution for models converted with `--dynamic_image_size`.
+
+## AscendCL NN (aclnn) Single-Operator Execution (CANN 7.0+)
+
+For CANN 7.0+ and 8.0, AscendCL provides high-performance C APIs (`aclnn*`) for executing individual operators directly without compiling an offline `.om` model.
+
+| API | Operation | Description |
+|---|---|---|
+| `aclnnMatMul` | Matrix Multiplication | Executes BLAS GEMM directly on NPU AI Cores |
+| `aclnnConv2d` | 2D Convolution | High-performance convolution operator |
+| `aclnnAdd` | Elementwise Addition | Vector addition on NPU Vector Cores |
+
+### Calling Pattern for `aclnn*` Operators
+
+1. Create tensor descriptors: `aclCreateTensor`
+2. Query workspace size: `aclnnMatMulGetWorkspaceSize(..., &workspaceSize, &executor)`
+3. Allocate workspace memory: `aclrtMalloc(&workspace, workspaceSize, ...)`
+4. Launch async operator: `aclnnMatMul(workspace, workspaceSize, executor, stream)`
+5. Synchronize stream: `aclrtSynchronizeStream(stream)`
 
 ## Error Handling
 

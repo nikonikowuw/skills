@@ -10,12 +10,25 @@ DVPP provides hardware-accelerated media processing on Ascend devices:
 
 | Module | Functions |
 |---|---|
-| **VPC** (Vision Preprocessing Core) | Resize, crop, paste, format conversion (YUV↔RGB), rotate |
-| **JPEGD** | JPEG hardware decode |
-| **JPEGE** | JPEG hardware encode |
+| **VPC** (Vision Preprocessing Core) | Resize, crop, paste, format conversion (YUV↔RGB), rotate, batch operations (`acldvppVpcBatchCropAsync`, `acldvppVpcBatchResizeAsync`) |
+| **HI_MPI** (Unified Media API, CANN 7.0+) | Modern unified media layer (`hi_mpi_vpc_resize`, `hi_mpi_jpeg_decode`, `hi_mpi_vdec_create_chan`) |
+| **JPEGD** | JPEG hardware decode (`acldvppJpegDecodeAsync`) |
+| **JPEGE** | JPEG hardware encode (`acldvppJpegEncodeAsync`, `acldvppJpegPredictEncSize`) |
 | **PNGD** | PNG hardware decode |
 | **VDEC** | Video hardware decode (H.264/H.265) |
 | **VENC** | Video hardware encode (H.264/H.265) |
+
+## HI_MPI (Unified Media API, CANN 7.0+)
+
+CANN 7.0+ introduces **HI_MPI** (`hi_mpi_*` / `hi_dvpp_*`) as the recommended unified media processing interface for new projects.
+
+| Function | Operation | Notes |
+|---|---|---|
+| `hi_mpi_vpc_resize` | Image Resize | Replaces `acldvppVpcResizeAsync` with unified channel management |
+| `hi_mpi_dvpp_malloc` | Memory Allocation | 128-byte aligned memory allocation for HI_MPI buffers |
+| `hi_mpi_vdec_create_chan` | Video Decode Channel | Unified video decode channel creation |
+
+> 💡 **Migration Note**: For legacy code, `acldvpp*` APIs remain supported. For new CANN 7.0+ and CANN 8.0 codebases, HI_MPI is preferred.
 
 ## General Constraints
 

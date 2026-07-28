@@ -16,13 +16,15 @@ LIB_PATTERNS = {
     "libacl_dvpp": re.compile(r"(?P<path>/[^\s]*libacl_dvpp\.so[^\s]*)"),
     "libacl_op_compiler": re.compile(r"(?P<path>/[^\s]*libacl_op_compiler\.so[^\s]*)"),
     "libge_runner": re.compile(r"(?P<path>/[^\s]*libge_runner\.so[^\s]*)"),
+    "libascend_hal": re.compile(r"(?P<path>/[^\s]*libascend_hal\.so[^\s]*)"),
+    "libhi_mpi_vpc": re.compile(r"(?P<path>/[^\s]*libhi_mpi_vpc\.so[^\s]*)"),
 }
 
 SYMBOL_GROUPS = {
-    "runtime": ("aclInit", "aclFinalize", "aclrtSetDevice", "aclrtCreateContext", "aclrtCreateStream"),
-    "memory": ("aclrtMalloc", "aclrtFree", "aclrtMemcpy", "aclrtMemcpyAsync"),
-    "model": ("aclmdlLoadFromFile", "aclmdlExecute", "aclmdlExecuteAsync", "aclmdlCreateDataset"),
-    "dvpp": ("acldvppCreateChannel", "acldvppJpegDecodeAsync", "acldvppVpcResizeAsync", "acldvppVpcCropAndPasteAsync"),
+    "runtime": ("aclInit", "aclFinalize", "aclrtSetDevice", "aclrtSetDeviceWithoutContext", "aclrtCreateContext", "aclrtCreateStream"),
+    "memory": ("aclrtMalloc", "aclrtMallocAlign32", "aclrtFree", "aclrtMemcpy", "aclrtMemcpyAsync"),
+    "model": ("aclmdlLoadFromFile", "aclmdlExecute", "aclmdlExecuteAsync", "aclmdlCreateDataset", "aclnnMatMul"),
+    "dvpp": ("acldvppCreateChannel", "acldvppJpegDecodeAsync", "acldvppVpcResizeAsync", "acldvppVpcCropAndPasteAsync", "hi_mpi_vpc_resize"),
 }
 
 NODE_PATTERN = re.compile(r"/dev/(?:davinci\d+|davinci_manager|devmm_svm|hisi_hdc)")
@@ -54,7 +56,7 @@ DEVICE_ID_PATTERNS = [
     re.compile(r"Device\s*(?:SN|Serial)[\s:]*(\w+)", re.IGNORECASE),        # "Device SN: 01234"
 ]
 OM_PATTERN = re.compile(r"(?P<path>[^\s'\"()]+\.om)\b")
-AIPP_PATTERN = re.compile(r"(?P<path>[^\s'\"()]*aipp[^\s'\"()]*\.(?:cfg|conf|ini))\b", re.IGNORECASE)
+AIPP_PATTERN = re.compile(r"(?P<path>[^\s'\"()]*aipp[^\s'\"()]*\.(?:cfg|conf|ini|yaml|yml))\b", re.IGNORECASE)
 CONTEXT_HEADER_PATTERN = re.compile(r"^==\s*Device Context:\s*(?P<label>.+?)\s*==\s*$", re.IGNORECASE | re.MULTILINE)
 
 

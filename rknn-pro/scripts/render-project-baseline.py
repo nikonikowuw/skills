@@ -6,6 +6,7 @@ import sys
 from pathlib import Path
 
 DEFAULT_OUTPUT_CANDIDATES = (
+    ".agents/context/rknn-context/{machine_id}.md",
     ".agents/rknn-context.md",
     ".agent-context/rockchip-baseline.md",
     "docs/rockchip-baseline.md",
@@ -61,14 +62,27 @@ def load_text(path_arg):
     return sys.stdin.read()
 
 
-def choose_default_output_path():
+def sanitize_for_filename(value):
+    value = value.lower().strip()
+    value = re.sub(r"[^a-z0-9._-]", "_", value)
+    return value[:64] or "unknown"
+
+
+def extract_machine_id(text):
+    device_id = detect_device_id(text)
+    if device_id != "unknown":
+        return sanitize_for_filename(device_id)
+    fingerprint = environment_fingerprint(text)
+    return sanitize_for_filename(fingerprint)
+
+
+def choose_default_output_path(text, context_id_override=None):
     cwd = Path.cwd()
-    for candidate in DEFAULT_OUTPUT_CANDIDATES:
-        path = cwd / candidate
-        parent = path.parent
-        if parent.exists() and parent.is_dir():
-            return path
-    return cwd / DEFAULT_OUTPUT_CANDIDATES[0]
+    if context_id_override:
+        machine_id = sanitize_for_filename(context_id_override)
+    else:
+        machine_id = extract_machine_id(text)
+    return cwd / ".agents" / "context" / "rknn-context" / f"{machine_id}.md"
 
 
 def first_match(pattern, text, group=1, default="unknown"):
@@ -378,7 +392,8 @@ def main():
     parser = argparse.ArgumentParser(description="Render a Rockchip project baseline from pasted device evidence.")
     parser.add_argument("input", nargs="?", help="Optional text file containing pasted device evidence. Reads stdin if omitted.")
     parser.add_argument("-o", "--output", help="Optional markdown output file path.")
-    parser.add_argument("--write-default", action="store_true", help="Write to the recommended project path. Prefers .agents/rknn-context.md, then .agent-context/rockchip-baseline.md, then docs/rockchip-baseline.md.")
+    parser.add_argument("--context-id", help="Optional machine/context identifier to override auto-detected machine_id in output filename.")
+    parser.add_argument("--write-default", action="store_true", help="Write to .agents/context/rknn-context/{machine_id}.md using auto-detected machine_id or --context-id.")
     args = parser.parse_args()
 
     text = load_text(args.input)
@@ -395,7 +410,7 @@ def main():
     if args.output:
         output_path = Path(args.output)
     elif args.write_default:
-        output_path = choose_default_output_path()
+        output_path = choose_default_output_path(text, context_id_override=args.context_id)
 
     if output_path is not None:
         output_path.parent.mkdir(parents=True, exist_ok=True)

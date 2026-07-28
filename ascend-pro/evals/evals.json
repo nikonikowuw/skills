@@ -1,0 +1,126 @@
+{
+  "skill_name": "ascend-pro",
+  "evals": [
+    {
+      "id": 1,
+      "prompt": "We asked the user to run `cat /etc/machine-id` and got back `abc123def4567890abc123def4567890`. The cached context file `.agent/ascend-pro/context/abc123def4567890abc123def4567890.md` exists. Explain why checking the machine-id is mandatory before using cached context.",
+      "expected_output": "Explains machine-id verification cadence, context key isolation, and why cached context is valid only when machine-id matches.",
+      "files": [],
+      "expectations": [
+        "States that /etc/machine-id uniquely identifies a physical machine across drivers, containers, and NPU models.",
+        "Confirms that if the context file exists for the machine-id, cached context is valid and can be loaded directly.",
+        "Warns against assuming identical device models share the same CANN environment, driver, or firmware."
+      ]
+    },
+    {
+      "id": 2,
+      "prompt": "We need to onboard a new Atlas 200I A2 device. Walk through the full initialization sequence from collecting device evidence to generating `.agent/ascend-pro/context/{machine_id}.md`.",
+      "expected_output": "Provides the 4-step initialization sequence for creating a device-scoped project baseline context.",
+      "files": [],
+      "expectations": [
+        "Includes running detect-ascend-env.sh, collect-ascend-debug.sh, cat /etc/machine-id, and npu-smi info.",
+        "Uses render-project-baseline.py with --write-default to auto-detect machine_id and emit the baseline section.",
+        "Appends API context (AscendCL/DVPP signatures, memory alignment rules, AIPP config) to the generated file."
+      ]
+    },
+    {
+      "id": 3,
+      "prompt": "Our YOLOv8 PyTorch model needs to run on Ascend310P3. Provide the full conversion pipeline from PyTorch export to ONNX and ONNX to OM via ATC with dynamic batch size and FP16 precision.",
+      "expected_output": "Gives complete model conversion instructions including torch.onnx.export parameters and ATC command.",
+      "files": [],
+      "expectations": [
+        "Uses opset version 11-15 (recommends 13) in torch.onnx.export with named inputs/outputs and dynamic_axes.",
+        "Constructs the ATC command specifying --framework=5, --soc_version=Ascend310P3, --input_shape_range, and --output_type=FP16.",
+        "Recommends saving conversion logs via --log=debug alongside the .om artifact."
+      ]
+    },
+    {
+      "id": 4,
+      "prompt": "The team uses `aclrtMemcpy` to copy each frame from DVPP VPC output buffer to a host buffer, then back to a device buffer before model execution. Prove whether this copy is necessary and design a zero-copy path.",
+      "expected_output": "Identifies redundant host-device memory copies and designs a device-resident buffer handoff.",
+      "files": [],
+      "expectations": [
+        "Points out that DVPP VPC output is already in NPU device memory (aclrtMalloc / DVPP memory).",
+        "Shows that copying device -> host -> device wastes PCIe bandwidth and increases pipeline latency.",
+        "Proposes direct device-resident buffer passing using aclmdlDataset and aclrtSynchronizeStream."
+      ]
+    },
+    {
+      "id": 5,
+      "prompt": "Design an AscendCL inference loop in C++ using `aclrtMalloc`, `aclmdlExecuteAsync`, and `aclrtSynchronizeStream`. Show proper error handling for every ACL call.",
+      "expected_output": "Provides robust AscendCL C++ code wrapping ACL calls with error checks and stream synchronization.",
+      "files": [],
+      "expectations": [
+        "Wraps all AscendCL function calls with an ACL_CHECK macro or explicit aclError return code check.",
+        "Uses aclmdlExecuteAsync on an explicit aclrtStream to avoid blocking CPU work prematurely.",
+        "Synchronizes streams with aclrtSynchronizeStream and properly frees dataset and device memory."
+      ]
+    },
+    {
+      "id": 6,
+      "prompt": "We need to resize 1920x1080 YUV420SP (NV12) images to 640x640 using DVPP VPC. Specify the exact DVPP API, alignment constraints, stride formulas, and buffer size calculations.",
+      "expected_output": "Calculates DVPP VPC alignment constraints and buffer allocation accurately.",
+      "files": [],
+      "expectations": [
+        "Uses acldvppVpcResizeAsync for image resizing in DVPP.",
+        "Applies 16-pixel width alignment and 2-pixel height alignment constraints for VPC operations.",
+        "Calculates stride as align(width, 16) and buffer size formula based on NV12 format (width_stride * height_stride * 3 / 2)."
+      ]
+    },
+    {
+      "id": 7,
+      "prompt": "Our model expects BGR planar input normalized with mean=128, std=128. Design the AIPP configuration file for static AIPP preprocessing fed directly from DVPP NV12 output.",
+      "expected_output": "Generates a complete static AIPP configuration file with YUV2BGR color space conversion and normalization.",
+      "files": [],
+      "expectations": [
+        "Sets aipp_mode = static and specifies input_format = YUV420SP_U8.",
+        "Configures csc_switch = true and sets proper YUV-to-BGR color space conversion matrix.",
+        "Configures mean_chn_0/1/2 = 128 and min_chn_0/1/2 / var_reci_chn_0/1/2 for normalization."
+      ]
+    },
+    {
+      "id": 8,
+      "prompt": "Our project has an Atlas 310P host and an Atlas 200I A2 container sharing one baseline file. Review this configuration and explain the risks.",
+      "expected_output": "Identifies the risks of merging device contexts across different Ascend hardware models or host/container boundaries.",
+      "files": [],
+      "expectations": [
+        "States that .so libraries, header files, symbols, and OM artifacts must NOT be merged across device models.",
+        "Recommends maintaining separate device-scoped runtime context blocks for Host (Ascend310P) and Container (Atlas 200I A2).",
+        "Requires explicit runtime selection before writing code or building OM models."
+      ]
+    },
+    {
+      "id": 9,
+      "prompt": "We are building an Ascend C++ inference pipeline and need debug logging and latency profiling. Describe the recommended logging framework and mandatory logging points.",
+      "expected_output": "Outlines spdlog dual-logger setup, mandatory logging points, and latency CSV profiling.",
+      "files": [],
+      "expectations": [
+        "Recommends spdlog with dual loggers: `ascend` (stderr, human-readable) and `ascend_perf` (CSV file for timing).",
+        "Lists mandatory logging points: init, model load, memory allocation, DVPP, inference, stream sync, error paths.",
+        "Mandates wrapping all ACL calls with ACL_CHECK macro and controlling verbosity via ASCEND_LOG_LEVEL environment variable."
+      ]
+    },
+    {
+      "id": 10,
+      "prompt": "Our ONNX model converted to OM on Ascend310B4 has suboptimal GEMM operator throughput. How do we use AOE (Ascend Optimization Engine) to auto-tune operators and subgraphs on CANN 8.0?",
+      "expected_output": "Provides AOE auto-tuning workflow with --job_type and --aoe_mode parameters.",
+      "files": [],
+      "expectations": [
+        "Uses the aoe command specifying --framework=5, --model=model.onnx, and --soc_version=Ascend310B4.",
+        "Explains --job_type (1 for subgraph, 2 for operator tuning) and --aoe_mode (subgraph,operator,block).",
+        "Recommends comparing baseline model.om vs model_tuned.om using summarize-stage-latency.py."
+      ]
+    },
+    {
+      "id": 11,
+      "prompt": "We are starting a new CANN 7.0+ video pipeline project. Should we use the legacy acldvppVpc* APIs or the HI_MPI interface for image resizing?",
+      "expected_output": "Recommends HI_MPI for new CANN 7.0+ projects while acknowledging acldvpp support.",
+      "files": [],
+      "expectations": [
+        "Explains that HI_MPI (hi_mpi_vpc_resize, hi_mpi_jpeg_decode) is the modern unified media layer in CANN 7.0+.",
+        "Notes that legacy acldvpp APIs remain supported for backward compatibility.",
+        "Highlights 128-byte alignment requirements for hi_mpi_dvpp_malloc."
+      ]
+    }
+  ]
+}

@@ -2,7 +2,7 @@
 
 Single reference for the full device-evidence loop: first response when no baseline exists →
 collect evidence on the board → turn it into a reviewed baseline → store it as
-`.agents/rknn-context.md`. The command checklist in Step 2 is the only copy in this skill;
+`.agents/context/rknn-context/{machine_id}.md`. The command checklist in Step 2 is the only copy in this skill;
 other documents link here instead of repeating it.
 
 For multi-board/multi-BSP context rules (context IDs, handoff format, red flags), see
@@ -143,7 +143,11 @@ per device context.
 Generate a draft with the bundled parser, or write it manually:
 
 ```bash
-python3 <skill-root>/scripts/render-project-baseline.py pasted-evidence.txt -o .agents/rknn-context.md
+# Auto-detect machine_id and write to .agents/context/rknn-context/{machine_id}.md:
+python3 <skill-root>/scripts/render-project-baseline.py pasted-evidence.txt --write-default
+
+# Or specify custom context ID:
+python3 <skill-root>/scripts/render-project-baseline.py pasted-evidence.txt --write-default --context-id my-rk3588-board
 ```
 
 Use this structure (the parser emits the same shape):
@@ -231,15 +235,14 @@ short of implementation and ask for more evidence.
 
 ## Step 5 — Store the Baseline
 
-Prefer these locations in order:
+The baseline is stored at a per-device path:
 
-1. `.agents/rknn-context.md` (recommended device and software baseline)
-2. `.agent-context/rockchip-baseline.md` (legacy)
-3. `docs/rockchip-baseline.md` (fallback)
+1. `.agents/context/rknn-context/{machine_id}.md` (recommended per-device baseline)
+2. `.agents/rknn-context.md` (legacy single-file baseline fallback)
+3. `.agent-context/rockchip-baseline.md` (legacy fallback)
+4. `docs/rockchip-baseline.md` (project documentation fallback)
 
-`scripts/render-project-baseline.py` supports `--write-default` (picks the first path whose
-parent directory exists, otherwise creates `.agents/rknn-context.md`) and `-o <path>` for an
-explicit target. Do not store the file until it has passed the Step 4 review.
+`scripts/render-project-baseline.py` supports `--write-default` (auto-detects `machine_id` and creates `.agents/context/rknn-context/{machine_id}.md`), `--context-id <label>` to override the machine ID, and `-o <path>` for an explicit target. Do not store the file until it has passed the Step 4 review.
 
 ## Using the Baseline
 

@@ -12,7 +12,7 @@ Build or tune Rockchip inference and media pipelines on RK3568, RK3576, and RK35
 
 1. Classify the task before collecting evidence. Source-only review, conversion planning, and API explanation can start without board access; mark board-dependent conclusions as unverified.
 2. Before developing or approving model input, preprocessing, zero-copy tensor layout, quantization-sensitive postprocessing, or deployment configuration, pass the Model Conversion Evidence Gate below. Keep model provenance separate from device provenance.
-3. When ABI, allocator, driver, compatibility, or performance facts matter, select one device context. Run the bundled diagnostic on that board and render `.agents/rknn-context.md` in the target project.
+3. When ABI, allocator, driver, compatibility, or performance facts matter, select one device context. Run the bundled diagnostic on that board and render `.agents/context/rknn-context/{machine_id}.md` in the target project.
 4. Read only the references needed for the active task:
    - Model conversion or quantization: [model-conversion.md](references/model-conversion.md), then [npu-op-compatibility.md](references/npu-op-compatibility.md) for operator or precision issues.
    - Runtime/RGA/MPP API question: start with [api-quick-reference.md](references/api-quick-reference.md), then open the subsystem reference.
@@ -48,11 +48,12 @@ When the gate is blocked, make the boundary explicit in the response. Report:
 4. Decisions blocked by those unknowns and the evidence needed to unblock them.
 5. Work that may continue now, limited to analysis or implementation whose correctness does not depend on the missing model facts.
 
-## Initialization Checklist (`.agents/rknn-context.md`)
+## Initialization Checklist (`.agents/context/rknn-context/{machine_id}.md`)
 
 When board-specific facts matter or fingerprint mismatches:
 - [ ] Run `<skill-root>/scripts/rknn-diag.sh` on device (or use the checklist in [device-baseline-workflow.md](references/device-baseline-workflow.md)).
-- [ ] Build baseline from the target project: `python3 <skill-root>/scripts/render-project-baseline.py pasted-evidence.txt -o .agents/rknn-context.md`.
+- [ ] Build baseline from the target project: `python3 <skill-root>/scripts/render-project-baseline.py pasted-evidence.txt --write-default`.
+- [ ] The `--write-default` flag auto-detects `machine_id` and writes to `.agents/context/rknn-context/{machine_id}.md`. Use `--context-id <label>` to override the auto-detected ID.
 - [ ] Set context ID: `{device_id_or_label}-{soc}-{environment_fingerprint}-{purpose}`. Maintain separate blocks per board/BSP.
 - [ ] Review parser output against the raw evidence. A generated baseline is a draft, not proof.
 
@@ -73,6 +74,8 @@ When board-specific facts matter or fingerprint mismatches:
 - [ ] `rknn_create_mem` uses max of tensor size vs stride-derived size?
 - [ ] RGA destination matches NPU queried `w_stride` / `h_stride`?
 - [ ] Math overflow / out-of-bounds proven impossible for strides/ROI?
+- [ ] **RGA DMA-BUF lifecycle — `importbuffer_fd` once per pool, not per-frame `wrapbuffer_fd`?** (see [known-crash-patterns.md](references/known-crash-patterns.md) — RGA cascade)
+- [ ] **RGA core load balancing — `im_set_core_mask()` set to use all available RGA cores?** (default single-core affinity is a common amplifier)
 - [ ] Resource acquisition (fd/mmap) paired with release across all paths?
 - [ ] Queue limits enforced? Cache sync / fences ordered correctly?
 - [ ] NPU cores assigned and memory budgeted for multi-model?
@@ -100,7 +103,7 @@ When board-specific facts matter or fingerprint mismatches:
 | [zero-copy-pipeline.md](references/zero-copy-pipeline.md) | DMA-BUF pipeline, MPP/RGA zero-copy patterns |
 | [zero-copy-check.md](references/zero-copy-check.md) | **Audit procedure** — subagent dispatch for max zero-copy |
 | [project-crash-risk-audit.md](references/project-crash-risk-audit.md) | **Comprehensive safety audit** — overflow, lifetime, crash risk |
-| [known-crash-patterns.md](references/known-crash-patterns.md) | Official failure modes and community cases |
+| [known-crash-patterns.md](references/known-crash-patterns.md) | Official failure modes and community cases — **including RGA DMA-BUF lifecycle cascade failure** |
 | [perf-debugging.md](references/perf-debugging.md) | Throughput, hidden copies, sync waits |
 | [device-baseline-workflow.md](references/device-baseline-workflow.md) | Full device-evidence loop: collect, baseline, review |
 | [device-scoped-context.md](references/device-scoped-context.md) | Multiple boards, containers, or BSP images |

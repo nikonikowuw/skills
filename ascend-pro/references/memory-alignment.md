@@ -9,6 +9,7 @@ runtime errors (`aclError` returns), or hardware hangs.
 | Operation | Buffer Addr Align | Width Stride Align | Height Stride Align | Size Formula |
 |---|---|---|---|---|
 | **DVPP VPC** (YUV420SP input) | 16 bytes | 16 | 2 | `ws * hs * 3 / 2` |
+| **DVPP VPC** (YUV420SP_U10 10-bit) | 16 bytes | 32 | 2 | `ws * hs * 3 / 2` |
 | **DVPP VPC** (YUV420SP output) | 16 bytes | 16 | 2 | `ws * hs * 3 / 2` |
 | **DVPP VPC** (RGB888) | 16 bytes | 32 | 2 | `ws * hs * 3` |
 | **DVPP VPC** (ARGB8888) | 16 bytes | 32 | 2 | `ws * hs * 4` |

@@ -24,9 +24,9 @@ capture npu_smi_board npu-smi info -t board
 capture npu_smi_usages npu-smi info -t usages
 
 capture cann_env sh -lc 'printf "ASCEND_HOME_PATH=%s\n" "${ASCEND_HOME_PATH:-}"; printf "ASCEND_TOOLKIT_HOME=%s\n" "${ASCEND_TOOLKIT_HOME:-}"; printf "ASCEND_AICPU_PATH=%s\n" "${ASCEND_AICPU_PATH:-}"; printf "LD_LIBRARY_PATH=%s\n" "${LD_LIBRARY_PATH:-}"'
-capture ascend_tools sh -lc 'for tool in npu-smi atc aclprof msame ais_bench; do command -v "$tool" 2>/dev/null || true; done'
+capture ascend_tools sh -lc 'for tool in npu-smi atc aoe aclprof msprof msame ais_bench ais_infer; do command -v "$tool" 2>/dev/null || true; done'
 capture atc_version atc --version
-capture library_scan sh -lc "find /usr/local/Ascend /usr /usr/local -maxdepth 6 \\( -name 'libascendcl.so*' -o -name 'libacl_dvpp.so*' -o -name 'libacl_op_compiler.so*' -o -name 'libge_runner.so*' -o -name 'libacl_tdt_channel.so*' \\) 2>/dev/null"
+capture library_scan sh -lc "find /usr/local/Ascend /usr /usr/local -maxdepth 6 \\( -name 'libascendcl.so*' -o -name 'libacl_dvpp.so*' -o -name 'libacl_op_compiler.so*' -o -name 'libge_runner.so*' -o -name 'libascend_hal.so*' -o -name 'libhi_mpi_vpc.so*' -o -name 'libacl_tdt_channel.so*' \\) 2>/dev/null"
 capture header_scan sh -lc "find /usr/local/Ascend /usr /usr/local -maxdepth 6 \\( -name 'acl.h' -o -name 'acl_dvpp.h' -o -name 'acl_rt.h' -o -name 'acl_mdl.h' \\) 2>/dev/null"
 capture python_acl sh -lc 'python3 - <<PY
 try:
@@ -36,6 +36,11 @@ try:
 except Exception as exc:
     print("python acl module: not importable")
     print(type(exc).__name__ + ": " + str(exc))
+try:
+    import torch_npu
+    print("torch_npu module: present", getattr(torch_npu, "__version__", "unknown"))
+except Exception:
+    print("torch_npu module: not importable")
 PY'
 
 printf 'Wrote debug bundle to %s\n' "$out_dir"

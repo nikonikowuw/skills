@@ -29,6 +29,13 @@ For each OM artifact, record:
 - Keep conversion tool version, runtime CANN version, and target device aligned where possible.
 - Treat framework adapters, benchmark wrappers, ATC, and ACL runtime as different surfaces with different responsibilities.
 
+## Ecosystem Inference Tools (CANN 8.0 / 7.0)
+
+- **`ais_bench` / `ais_infer`**: Standard NPU inference benchmarking tools for Ascend OM models (`ais_bench --model model.om --loop 100 --batch 1`).
+- **MindIE (Mind Inference Engine)**: High-performance inference engine for LLMs and multi-model deployment, featuring dynamic batching and disaggregated prefill-decode serving.
+- **ATB (Ascend Transformer Boost)**: Accelerated transformer operator library for LLM inference on Ascend910B devices (`atb_speed`).
+- **Container Deployment**: Use `ascend-docker-plugin` for k8s NPU device allocation; mount `/usr/local/Ascend/driver` and CANN toolkit.
+
 ## Integration Questions
 
 Before editing code, answer these:

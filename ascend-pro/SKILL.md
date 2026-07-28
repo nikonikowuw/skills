@@ -157,7 +157,7 @@ Identification and provenance for this context document.
 - **Firmware Version**: x.x.x
 - **Created**: YYYY-MM-DD
 - **Last Verified**: YYYY-MM-DD
-- **Verification Checklist**: [baseline-review-checklist.md](../references/baseline-review-checklist.md)
+- **Verification Checklist**: [baseline-review-checklist.md](references/baseline-review-checklist.md)
 
 ---
 ## Device Baseline
@@ -193,14 +193,14 @@ Identification and provenance for this context document.
 ---
 ## API Context
 
-Key AscendCL API signatures relevant to the project, extracted from [acl-api-reference.md](../references/acl-api-reference.md):
+Key AscendCL API signatures relevant to the project, extracted from [acl-api-reference.md](references/acl-api-reference.md):
 
 | API | Signature | Notes |
 |---|---|---|
 | aclrtMalloc | `aclError aclrtMalloc(void **devPtr, size_t size, aclrtMemMallocPolicy policy)` | 64-byte alignment |
 | ... | ... | ... |
 
-Key DVPP API signatures from [dvpp-api-reference.md](../references/dvpp-api-reference.md):
+Key DVPP API signatures from [dvpp-api-reference.md](references/dvpp-api-reference.md):
 
 | API | Operation | Alignment Constraints |
 |---|---|---|
@@ -210,7 +210,7 @@ Key DVPP API signatures from [dvpp-api-reference.md](../references/dvpp-api-refe
 ---
 ## Memory Alignment Rules
 
-From [memory-alignment.md](../references/memory-alignment.md). Critical for buffer allocation:
+From [memory-alignment.md](references/memory-alignment.md). Critical for buffer allocation:
 
 | Operation | Width Align | Height Align | Stride Formula | Buffer Size Formula |
 |---|---|---|---|---|
@@ -266,7 +266,7 @@ When multiple devices exist (e.g., container + host), maintain one section per c
 
 | Date | Check | Result |
 |---|---|---|
-| YYYY-MM-DD | Baseline reviewed per [baseline-review-checklist.md](../references/baseline-review-checklist.md) | ✅ Pass |
+| YYYY-MM-DD | Baseline reviewed per [baseline-review-checklist.md](references/baseline-review-checklist.md) | ✅ Pass |
 | YYYY-MM-DD | API context verified against project source | ✅ Pass |
 | YYYY-MM-DD | Memory alignment rules match project operations | ✅ Pass |
 
@@ -328,6 +328,11 @@ Use `ctx_search(source: "ascend-...")` to retrieve excerpts:
 |---|---|
 | `ascend-atc-onnx-conversion` | ATC ONNX model conversion quick start |
 | `ascend-atc-params` | ATC parameter reference |
+| `ascend-aoe-tuning` | AOE auto-tuning parameters and job types |
+| `ascend-hi-mpi-guide` | HI_MPI unified media API guide (CANN 7.0+) |
+| `ascend-torch-npu` | PyTorch NPU backend (`torch_npu`) integration guide |
+| `ascend-mindie` | MindIE LLM inference serving engine reference |
+| `ascend-fp8-guide` | FP8 precision mode configuration for Ascend910B |
 | `ascend-aipp-config-template` | Full AIPP config template with defaults |
 | `ascend-aipp-howto` | How to enable AIPP |
 | `ascend-aipp-dynamic-example` | Dynamic AIPP parameter structure |

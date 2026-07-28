@@ -170,23 +170,53 @@ python -c "import onnx; onnx.checker.check_model('model.onnx'); print('OK')"
 ### Basic command
 
 ```bash
-atc --model=model.onnx --framework=5 --output=model.om --soc_version=Ascend310P3
+atc --model=model.onnx --framework=5 --output=model.om --soc_version=Ascend310B4
 ```
+
+> 💡 **Supported `soc_version` examples (CANN 7.0 / 8.0)**:
+> - Edge/Embedded: `Ascend310B1`, `Ascend310B4`, `Ascend310P1`, `Ascend310P3`, `Ascend310P4`
+> - Server/Training: `Ascend910B1`, `Ascend910B2`, `Ascend910B3`, `Ascend910B4`
 
 ## Critical Parameters
 
 | Parameter | Values | Description |
 |---|---|---|
-| `--soc_version` | Ascend310P1/3, Ascend910B1, Ascend310B1, etc. | **Must** match target device. Check via `npu-smi info` or `/usr/local/Ascend/driver/version.conf`. |
-| `--precision_mode` | `force_fp16`, `allow_fp32_to_fp16`, `must_keep_origin_dtype`, `allow_mix_precision` | Controls operator precision. `allow_mix_precision` gives best perf/accuracy trade-off. |
+| `--soc_version` | Ascend310B1/B4, Ascend310P1/3/4, Ascend910B1-B4 | **Must** match target device. Check via `npu-smi info` or `version.conf`. |
+| `--precision_mode` | `force_fp16`, `force_fp8` (CANN 8.0+ Ascend910B3/B4), `allow_fp32_to_fp16`, `must_keep_origin_dtype`, `allow_mix_precision` | Controls operator precision. `allow_mix_precision` gives best perf/accuracy trade-off. |
 | `--op_select_implmode` | `high_precision`, `high_performance` | `high_precision` resolves accuracy degradation; `high_performance` maximizes throughput. |
+| `--enable_compress_weight` | `true`, `false` | Enables weight compression to reduce OM model size on memory-constrained devices. |
+| `--buffer_optimize` | `off_optimize`, `l1_optimize`, `l2_optimize` | Memory buffer reuse optimization for Graph Engine during offline model generation. |
 | `--input_shape` | e.g., `data:1,3,224,224` | Override input shapes (required for dynamic-shaped ONNX models). |
 | `--dynamic_batch_size` | e.g., `1,2,4,8` | Enables dynamic batch at runtime. Cannot use with `--input_shape` for the same input. |
 | `--dynamic_image_size` | e.g., `224,224;512,512` | Enables dynamic resolution at runtime. |
-| `--insert_op_conf` | path to AIPP config | Attach AIPP preprocessing configuration. |
+| `--insert_op_conf` | path to AIPP config | Attach AIPP preprocessing configuration (supports `.cfg` or CANN 8.0 `.yaml`). |
 | `--output_type` | FP32, FP16, UINT8, etc. | Force output data type. |
 | `--log` | `debug`, `info`, `warning`, `error` | Debug level — use `debug` to see which operators fail. |
 | `--out_nodes` | e.g., `output:0` | Specify output node names (when model has multiple outputs). |
+
+---
+
+## 4. AOE Auto-Tuning (Ascend Optimization Engine)
+
+CANN provides **AOE (Ascend Optimization Engine)** to automatically tune operators and subgraphs for target Ascend NPUs after initial ONNX conversion.
+
+### Running AOE
+
+```bash
+aoe --framework=5 --model=model.onnx --output=model_tuned.om \
+    --soc_version=Ascend310B4 \
+    --job_type=1 \
+    --aoe_mode=subgraph,operator
+```
+
+### AOE Job Types & Modes
+
+| Parameter | Options | Purpose |
+|---|---|---|
+| `--job_type` | `1` (subgraph), `2` (operator) | `1` tunes subgraph fusion passes; `2` tunes GEMM/Conv operator tile policies. |
+| `--aoe_mode` | `subgraph`, `operator`, `block` | Multi-stage auto-tuning mode for CANN 8.0+. Combine modes with commas. |
+
+> 💡 **Best Practice**: Run baseline ATC conversion first to produce `model.om`. If throughput or latency needs further optimization, run AOE tuning to produce `model_tuned.om` and measure the performance gain with `summarize-stage-latency.py`.
 
 ## Dynamic Shape Strategies
 

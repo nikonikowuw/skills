@@ -44,7 +44,7 @@ printf 'ASCEND_TOOLKIT_HOME=%s\n' "${ASCEND_TOOLKIT_HOME:-}"
 printf 'ASCEND_AICPU_PATH=%s\n' "${ASCEND_AICPU_PATH:-}"
 
 print_header "Ascend Tools"
-for tool in npu-smi atc aclprof msame ais_bench; do
+for tool in npu-smi atc aoe aclprof msprof msame ais_bench ais_infer; do
   command -v "$tool" 2>/dev/null || true
 done
 
@@ -56,6 +56,8 @@ find /usr/local/Ascend /usr /usr/local -maxdepth 6 \
   -o -name 'libacl_dvpp.so*' \
   -o -name 'libacl_op_compiler.so*' \
   -o -name 'libge_runner.so*' \
+  -o -name 'libascend_hal.so*' \
+  -o -name 'libhi_mpi_vpc.so*' \
   -o -name 'libacl_tdt_channel.so*' \) 2>/dev/null || true
 
 print_header "Ascend Header Candidates"
