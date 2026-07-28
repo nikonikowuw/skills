@@ -1,7 +1,13 @@
 ---
 name: rknn-pro
 description: >
-  Build, diagnose, review, or optimize Linux inference and media pipelines that use Rockchip RKNN, RKNN-Toolkit2, RKNN Runtime/RKNPU2, RGA/librga, MPP, DMA-BUF, or RK3568/RK3576/RK3588-class SoCs. Use this skill whenever a task mentions RKNN model conversion or quantization, Rockchip NPU operators, tensor stride or alignment, zero-copy camera/video pipelines, multi-model scheduling, runtime/BSP compatibility, high CPU or latency, memory corruption, service crashes, or kernel-facing safety, even when the user does not explicitly ask for an RKNN expert.
+  Build, diagnose, review, or optimize Linux inference and media pipelines
+  using Rockchip RKNN, RKNN-Toolkit2, RKNN Runtime, RGA/librga, MPP,
+  DMA-BUF, or RK3568/RK3576/RK3588 SoCs. Use when a task mentions RKNN
+  conversion, NPU operators, tensor stride, zero-copy pipelines,
+  multi-model scheduling, BSP compatibility, memory corruption, crashes,
+  or kernel-facing safety. Do not use for Ascend/ACL, TensorRT/CUDA,
+  OpenVINO, or non-Rockchip Linux DMA-BUF.
 ---
 
 # rknn-pro
@@ -15,11 +21,20 @@ Build or tune Rockchip inference and media pipelines on RK3568, RK3576, and RK35
 3. When ABI, allocator, driver, compatibility, or performance facts matter, select one device context. Run the bundled diagnostic on that board and render `.agents/rknn-context.md` in the target project.
 4. Read only the references needed for the active task:
    - Model conversion or quantization: [model-conversion.md](references/model-conversion.md), then [npu-op-compatibility.md](references/npu-op-compatibility.md) for operator or precision issues.
-   - Runtime/RGA/MPP API question: start with [api-quick-reference.md](references/api-quick-reference.md), then open the subsystem reference.
+   - YOLO detection model deployment: [yolo-deployment-cookbook.md](references/yolo-deployment-cookbook.md).
+   - RKNN Runtime API question: [api-quick-reference.md](references/api-quick-reference.md), then [rknn-api-reference.md](references/rknn-api-reference.md).
+   - RGA API question: [api-quick-reference.md](references/api-quick-reference.md), then [rga-api-reference.md](references/rga-api-reference.md).
+   - MPP API question: [api-quick-reference.md](references/api-quick-reference.md), then [mpp-api-reference.md](references/mpp-api-reference.md).
    - DMA-BUF or inference pipeline: [zero-copy-pipeline.md](references/zero-copy-pipeline.md); for an implementation audit, follow [zero-copy-check.md](references/zero-copy-check.md) and dispatch the required subagent.
    - Multi-model or cascade scheduling: [multi-model-scheduling.md](references/multi-model-scheduling.md).
    - SDK upgrade, tensor allocation, alignment, or stride: [memory-alignment.md](references/memory-alignment.md).
    - Crash or full safety audit: follow every phase in [project-crash-risk-audit.md](references/project-crash-risk-audit.md) and use [known-crash-patterns.md](references/known-crash-patterns.md) only as evidence anchors.
+   - Performance or latency diagnosis: [perf-debugging.md](references/perf-debugging.md).
+   - Version or BSP compatibility: [version-audit.md](references/version-audit.md).
+   - Multiple boards or containers: [device-scoped-context.md](references/device-scoped-context.md).
+   - Deployment strategy (PC-side vs board-side): [rknn-deployment.md](references/rknn-deployment.md).
+   - Unfamiliar project onboarding: [project-onboarding-workflow.md](references/project-onboarding-workflow.md).
+   - SoC capability or topology comparison: [soc-matrix.md](references/soc-matrix.md).
 5. Separate observed facts, source-derived findings, hypotheses, and model- or board-dependent unknowns in the final answer.
 
 Resolve `scripts/...` and `references/...` relative to this `SKILL.md`, not the target repository. Run bundled scripts by absolute path while keeping the shell working directory at the target project so generated context and reports land there.
@@ -71,51 +86,33 @@ When board-specific facts matter or fingerprint mismatches:
 - [ ] Graph precision confirmed from report, not host dtype?
 - [ ] CMake uses `size_with_stride` gracefully with older headers?
 - [ ] `rknn_create_mem` uses max of tensor size vs stride-derived size?
+- [ ] RGA dimensions, strides, and ROI coordinates strictly validated for hardware alignment?
 - [ ] RGA destination matches NPU queried `w_stride` / `h_stride`?
 - [ ] Math overflow / out-of-bounds proven impossible for strides/ROI?
 - [ ] Resource acquisition (fd/mmap) paired with release across all paths?
 - [ ] Queue limits enforced? Cache sync / fences ordered correctly?
 - [ ] NPU cores assigned and memory budgeted for multi-model?
 
-## References
+## Known Gotchas
 
-### Core
-| File | Topic |
-|---|---|
-| [soc-matrix.md](references/soc-matrix.md) | RK3568 vs RK3576 vs RK3588 vs RV1106 differences, RKLLM bounds |
-| [model-conversion.md](references/model-conversion.md) | PT/TF→ONNX→RKNN, quantization, version checks |
-| [model-conversion-manifest.md](references/model-conversion-manifest.md) | Required model provenance and normalization/precision evidence template |
-| [yolo-deployment-cookbook.md](references/yolo-deployment-cookbook.md) | YOLOv8/v11/RT-DETR deployment, hybrid quantization |
-| [npu-op-compatibility.md](references/npu-op-compatibility.md) | Operator verification, CPU/custom operators, quantization |
-| [multi-model-scheduling.md](references/multi-model-scheduling.md) | Multi-model concurrent inference, NPU core assignment |
-| [rknn-api-reference.md](references/rknn-api-reference.md) | RKNN Runtime API signatures, parameters, memory modes |
-| [rga-api-reference.md](references/rga-api-reference.md) | RGA im2d API, DMA-BUF import, format/alignment constraints |
-| [mpp-api-reference.md](references/mpp-api-reference.md) | MPP decode/encode, external buffer mode, buffer pool |
-| [api-quick-reference.md](references/api-quick-reference.md) | Condensed API signatures for RKNN, RGA, MPP |
-| [memory-alignment.md](references/memory-alignment.md) | **Critical**: RKNN `size_with_stride`, allocation fallback, RGA/MPP stride |
-
-### Pipeline, Audit, & Workflow
-| File | Topic |
-|---|---|
-| [zero-copy-pipeline.md](references/zero-copy-pipeline.md) | DMA-BUF pipeline, MPP/RGA zero-copy patterns |
-| [zero-copy-check.md](references/zero-copy-check.md) | **Audit procedure** — subagent dispatch for max zero-copy |
-| [project-crash-risk-audit.md](references/project-crash-risk-audit.md) | **Comprehensive safety audit** — overflow, lifetime, crash risk |
-| [known-crash-patterns.md](references/known-crash-patterns.md) | Official failure modes and community cases |
-| [perf-debugging.md](references/perf-debugging.md) | Throughput, hidden copies, sync waits |
-| [device-baseline-workflow.md](references/device-baseline-workflow.md) | Full device-evidence loop: collect, baseline, review |
-| [device-scoped-context.md](references/device-scoped-context.md) | Multiple boards, containers, or BSP images |
-| [version-audit.md](references/version-audit.md) | BSP library version compatibility |
-| [project-onboarding-workflow.md](references/project-onboarding-workflow.md) | Unfamiliar project onboarding |
-| [rknn-deployment.md](references/rknn-deployment.md) | Deployment strategies, PC-side vs board-side |
+- Two-stage cascade crops (e.g. from bounding boxes) often produce unaligned coordinates causing RGA corruption; snap to 4-byte boundaries before calling RGA → [rga-api-reference.md](references/rga-api-reference.md)
+- `RKNN_TENSOR_FLOAT32` ≠ NPU FP32 execution; it triggers host→device format conversion → [memory-alignment.md](references/memory-alignment.md)
+- `RKNN_FLAG_ASYNC_MASK` retrieves **previous** frame's output, not current; its previous-frame output semantics are runtime-version specific → [multi-model-scheduling.md](references/multi-model-scheduling.md)
+- RGA `wrapbuffer_fd` with 4 args assumes tight stride; use 6-arg form → [rga-api-reference.md](references/rga-api-reference.md)
+- `rknn_create_mem` must use max(tensor_size, stride_size) or SIGSEGV → [memory-alignment.md](references/memory-alignment.md)
+- Missing `imcheck` before RGA operations causes silent corruption → [rga-api-reference.md](references/rga-api-reference.md)
+- `do_quantization=True` proves only what was requested, not actual graph precision → [model-conversion.md](references/model-conversion.md)
 
 ## Operating Rules
+
+- Precision inquiry → read Toolkit2 build report. Missing? → mark precision as `unknown`, list in gate-blocked report §4.
+- Normalization inquiry → read preserved conversion config/log. Do not infer from ONNX input dtype, `.rknn` filename, host C buffer type, `pass_through`, `want_float`, or Runtime convenience conversion. Missing? → mark as `unknown`.
+- DMA-BUF feasibility → verify ownership + layout + sync + consumer support for every hop. Any unproven? → use virtual-address path, note as measured fallback.
+- RGA image processing → verify all dimensions, ROI coordinates, and strides are strictly aligned to hardware boundaries (e.g. 4-byte/even). ALWAYS mandate `imcheck()` validation before `improcess/imresize/imcrop`.
+- `RKNN_FLAG_ASYNC_MASK` question → read [multi-model-scheduling.md](references/multi-model-scheduling.md). Cite the previous-frame output rule; do not generalize to "nonblocking" or "multithreaded".
+- Zero-copy claim → identify every allocation, fd/import, CPU mapping, cache operation, fence, and release point. Any gap? → reject the claim.
+- Static-audit match → trace call paths, sizes, ownership, cleanup, and deployed versions before assigning severity. Matches are candidates, not confirmed findings.
 - Treat the selected target headers and version-matched official examples as the API contract; bundled signatures are navigation aids.
-- Distinguish host dtype from graph precision. `RKNN_TENSOR_FLOAT32` or `want_float=1` does not prove FP32 NPU execution.
-- Never infer Toolkit2 normalization or INT8 graph precision from a `.rknn` filename, ONNX input dtype, host C buffer type, `pass_through`, `want_float`, or Runtime convenience conversion.
-- Prefer DMA-BUF when ownership, layout, synchronization, and consumer support are proven. Virtual-address processing is a measured fallback, not automatically a defect.
-- Do not describe `RKNN_FLAG_ASYNC_MASK` as a generic nonblocking or multithreaded execution API. Its previous-frame output semantics are runtime-version specific.
-- Treat static-audit matches as candidates. Confirm call paths, sizes, ownership, cleanup, and deployed versions before assigning severity.
-- Never claim zero-copy without identifying every allocation, fd/import, CPU mapping, cache operation, fence, and release point.
 - Verify Toolkit2, model target, Runtime, driver, and headers before deployment or compatibility conclusions.
 
 ## Response Contract
@@ -127,4 +124,12 @@ For substantial diagnostics or reviews, report in this order:
 4. Coverage, exclusions, facts still unverified for the model conversion or target board, blocked decisions, and work still permitted.
 
 ## Quick Helpers
-- `scripts/inspect-onnx-model.py`, `scripts/rknn-diag.sh`, `scripts/render-project-baseline.py`, `scripts/audit-rockchip-memory-safety.py` (`--preprocess` + `--preprocess-include DIR`), `scripts/collect-rockchip-crash-evidence.sh`
+
+| When | Run |
+|---|---|
+| Have ONNX artifact, need contract | `scripts/inspect-onnx-model.py model.onnx` |
+| Need device baseline | `scripts/rknn-diag.sh -o evidence.txt` on board |
+| Build baseline doc from evidence | `scripts/render-project-baseline.py evidence.txt -o .agents/rknn-context.md` |
+| Source safety audit | `scripts/audit-rockchip-memory-safety.py --preprocess src/` |
+| Board crashed, collect evidence | `scripts/collect-rockchip-crash-evidence.sh [PID]` on board |
+| Have latency logs, need stats | `scripts/summarize-stage-latency.py < log.txt` |

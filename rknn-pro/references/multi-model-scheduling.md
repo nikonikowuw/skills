@@ -76,10 +76,12 @@ Use one of these patterns:
 | One worker per context | Models can use separate cores or CPU/RGA work overlaps inference | Queue bounds, shutdown, context ownership, and core masks are explicit. |
 | Context pool for one model | Multiple independent requests need bounded concurrency | Each leased context has isolated I/O memory and cannot be returned while work is in flight. |
 
-Do not call the same context concurrently unless the exact Runtime documentation for the deployed
-version guarantees that operation. Separate contexts are the conservative default. If the header
-exposes `rknn_dup_context`, verify its weight-sharing and lifetime contract before using it; do not
-infer memory savings from the API name.
+### Industrial Multi-Threading Standard (Weight Sharing)
+
+In a multi-threaded architecture (e.g. processing 4 camera streams with the same YOLO model), you must balance memory consumption and thread safety:
+1. **NEVER share a single `rknn_context` across threads**: Concurrent `rknn_run()` calls on the same context are not thread-safe and will cause memory corruption or deadlocks.
+2. **NEVER call `rknn_init()` per thread**: Initializing the same model multiple times duplicates the heavy model weights in memory, quickly leading to OOM (Out Of Memory) on embedded boards.
+3. **MANDATORY**: Use `rknn_dup_context()`. Call `rknn_init()` exactly once on the main thread to create the root context and load the weights. Then, for each worker thread, call `rknn_dup_context(root_ctx, &thread_ctx)`. This creates a fully isolated execution context (activations, states, inputs/outputs) for each thread while safely sharing the read-only model weights in memory.
 
 ## Memory Budget
 
@@ -129,6 +131,28 @@ Fan-out is zero-copy only if both consumers share the same DMA-BUF without a hid
 the producer lifetime covers both submissions. Track fences/cache synchronization for each
 consumer.
 
+## Multi-Core Binding Strategies (NPU, RGA, MPP)
+
+For SoCs with multiple NPU, RGA, or MPP cores (e.g., RK3588, RK3576), relying entirely on the driver's `AUTO` scheduling in high-concurrency scenarios often leads to driver lock contention, cache thrashing, and suboptimal throughput.
+
+### NPU Core Binding
+- **Single Heavy Model**: Use `RKNN_NPU_CORE_0_1_2` (RK3588) to split a single large inference task across all 3 cores. This minimizes single-frame latency but adds layer-splitting overhead.
+- **Multiple Independent Streams (High FPS)**: Bind each `rknn_context` to a distinct physical core (e.g., Context A → `RKNN_NPU_CORE_0`, Context B → `RKNN_NPU_CORE_1`). This eliminates context-switching overhead and maximizes total system FPS, though individual frame latency is bounded by a single core's performance.
+
+### RGA Core Binding
+RK3588 features multiple RGA cores (e.g., RGA2, RGA3). By default, `im2d` queues work dynamically.
+- **Avoid Cross-Stream Contention**: When processing multiple camera streams, bind Stream A's preprocessing entirely to `IM_HAL_CORE_RGA2` and Stream B to `IM_HAL_CORE_RGA3` using `im_opt_t.core` or `imconfig`. This prevents a heavy resize operation on Stream A from stalling Stream B's VSync-bound pipeline.
+- **Capability Matching**: RGA3 generally supports higher resolutions and more complex color space conversions than RGA2. Pin 4K/8K or exotic CSC tasks explicitly to RGA3.
+
+### MPP Core Binding (VDPU/VEPU)
+RK3588 features multiple hardware video decoders (VDPU) and encoders (VEPU). While the MPP kernel driver attempts to load-balance, high-density stream decoding (e.g. 16x 1080p cameras) can experience jitter if streams bounce between cores.
+- **Explicit Isolation**: You can bind a specific `MppCtx` to a fixed hardware core. Use `MppDecCfg` (or `MppEncCfg`) and set the core ID explicitly:
+  ```c
+  mpp_dec_cfg_set_u32(cfg, "hw:core_id", 1); // Bind to VDPU core 1
+  mpi->control(ctx, MPP_DEC_SET_CFG, cfg);
+  ```
+- **When to use**: Apply explicit core binding when you have deterministic, long-running video streams (e.g., NVR/IPC applications) to ensure strict QoS and cache warmth for each stream.
+
 ## Cascade Buffer Contract
 
 For every crop buffer, record:
@@ -174,6 +198,7 @@ detector worker:
   preprocess into a free detector slot
   run detector and check outputs
   decode, clamp, and validate ROIs
+  snap ROIs to hardware-aligned boundaries (e.g., 4-byte/even coordinates) to prevent RGA crop failure
   enqueue a bounded task that retains the frame reference
 
 classifier worker:
@@ -214,6 +239,7 @@ memory, fd count, and thermal frequency. Warm up first and keep model artifacts 
 - Concurrently calling one context because the application has multiple threads.
 - Assuming AUTO is bad or a wider core mask is always faster without measurement.
 - Allocating crop buffers from `width * height * channels` while ignoring queried strides.
+- Passing unaligned crop coordinates from the first stage directly to RGA without snapping to hardware boundaries.
 - Returning an MPP/V4L2 frame before downstream RGA work completes.
 - Passing an fd between contexts without importing it separately or defining ownership.
 - Ignoring `rknn_set_core_mask`, query, allocation, RGA, or output return codes.

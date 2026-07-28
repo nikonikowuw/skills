@@ -37,31 +37,35 @@ runtime errors.
 
 ## Alignment Calculation Functions
 
-### C / C++
+### C / C++ (Industrial Standard)
 
-```c
-#define ALIGN_UP(x, align)  (((x) + (align) - 1) & ~((align) - 1))
+In production environments, directly using the classic bitwise `ALIGN_UP` macro is a severe integer overflow vulnerability if dimensions come from external or untrusted video streams. **Always use overflow-checked alignment helpers:**
+
+```cpp
+#include <stdexcept>
+#include <limits>
+#include <cstddef>
+#include <cstdint>
+
+// Standard industrial-grade alignment with overflow protection
+static inline size_t AlignUpChecked(size_t value, size_t alignment) {
+    if (alignment == 0 || value > std::numeric_limits<size_t>::max() - (alignment - 1)) {
+        throw std::overflow_error("Rockchip allocation alignment overflow");
+    }
+    // Works for any alignment, not just powers of 2
+    return ((value + alignment - 1) / alignment) * alignment;
+}
 
 // RGA NV12 buffer size
-size_t calc_rga_nv12_size(int32_t width, int32_t height) {
-    int32_t ws = ALIGN_UP(width, 4);     // RGA NV12 width stride = 4-byte aligned
-    int32_t hs = ALIGN_UP(height, 2);    // RGA NV12 height stride = 2-byte aligned
-    return (size_t)ws * hs * 3 / 2;
-}
-
-// MPP decode buffer size (safe total)
-size_t calc_mpp_decode_size(int32_t width, int32_t height) {
-    int32_t ws = ALIGN_UP(width, 16);    // MPP stride = 16-byte aligned
-    int32_t hs = ALIGN_UP(height, 16);   // MPP stride = 16-byte aligned
-    return (size_t)ws * hs * 2;          // MPP safe total = ws * hs * 2
-}
-
-// RGA RGB888 buffer size
-size_t calc_rga_rgb888_size(int32_t width, int32_t height) {
-    int32_t ws = ALIGN_UP(width, 4);     // RGB888 stride = 4-byte aligned
-    return (size_t)ws * height * 3;
+size_t calc_rga_nv12_size(uint32_t width, uint32_t height) {
+    size_t ws = AlignUpChecked(width, 4);     // RGA NV12 width stride = 4-byte aligned
+    size_t hs = AlignUpChecked(height, 2);    // RGA NV12 height stride = 2-byte aligned
+    // Note: Use checked multiplication in real code to prevent overflow here as well
+    return ws * hs * 3 / 2;
 }
 ```
+
+> **Legacy Anti-Pattern:** The classic macro `#define ALIGN_UP(x, align) (((x) + (align) - 1) & ~((align) - 1))` only works for power-of-2 alignments and silently wraps around on integer overflow. Do not use it in new code.
 
 ### Python
 
@@ -369,14 +373,14 @@ Misaligned dimensions cause:
 
 ### NV12 (YUV420SP)
 
-```c
-// CORRECT
-int w_stride = ALIGN_UP(width, 4);    // width 1281 -> stride 1284 (not 1281!)
-int h_stride = ALIGN_UP(height, 2);
-int size = w_stride * h_stride * 3 / 2;
+```cpp
+// CORRECT (Industrial Standard)
+size_t w_stride = AlignUpChecked(width, 4);    // width 1281 -> stride 1284 (not 1281!)
+size_t h_stride = AlignUpChecked(height, 2);
+size_t size = w_stride * h_stride * 3 / 2;
 
 // WRONG — will fail imcheck or corrupt
-int size = width * height * 3 / 2;
+size_t size = width * height * 3 / 2;
 ```
 
 **Common failure:** `NV12` width `1281` fails because 1281 is not aligned to 2 (let alone 4).
@@ -384,14 +388,14 @@ Always align before passing to RGA.
 
 ### RGB888
 
-```c
-int w_stride = ALIGN_UP(width, 4);     // 4-byte alignment
+```cpp
+size_t w_stride = AlignUpChecked(width, 4);     // 4-byte alignment
 ```
 
 ### RGB565
 
-```c
-int w_stride = ALIGN_UP(width, 2);     // 2-byte alignment
+```cpp
+size_t w_stride = AlignUpChecked(width, 2);     // 2-byte alignment
 ```
 
 ## MPP Buffer Sizing
@@ -420,8 +424,8 @@ rknn_tensor_attr attr;
 rknn_query(ctx, RKNN_QUERY_INPUT_ATTR, &attr, sizeof(attr));
 
 // Update strides to match the actual buffer (e.g., from RGA output)
-attr.w_stride = ALIGN_UP(model_width, 4);    // must match buffer stride
-attr.h_stride = ALIGN_UP(model_height, 2);   // must match buffer stride
+attr.w_stride = AlignUpChecked(model_width, 4);    // must match buffer stride
+attr.h_stride = AlignUpChecked(model_height, 2);   // must match buffer stride
 
 rknn_set_io_mem(ctx, input_mem, &attr);
 ```

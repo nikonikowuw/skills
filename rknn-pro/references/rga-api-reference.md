@@ -148,8 +148,8 @@ IM_STATUS improcess(rga_buffer_t src, rga_buffer_t dst, rga_buffer_t pat,
 
 Combined operation driven by rects and usage flags: `srect` selects the source region, which is
 scaled/converted into `drect` of the destination. Pass empty (`{}`) `pat`/`prect` when no pattern
-blend is used, and `IM_SYNC` in `usage` for synchronous execution. Run `imcheck` with the same
-rects first.
+blend is used, and `IM_SYNC` in `usage` for synchronous execution. 
+**Multi-Core Note**: On RK3588/RK3576, you can bitwise-OR the `usage` flag with `IM_HAL_CORE_RGA3` or `IM_HAL_CORE_RGA2` to explicitly bind the operation to a specific hardware core, preventing cross-stream contention. Run `imcheck` with the same rects first.
 
 ### `imcvtcolor`
 
@@ -249,6 +249,15 @@ int h_stride = ALIGN_UP(height, 2);  // 2-byte alignment
 // NV12 buffer size
 int size = w_stride * h_stride * 3 / 2;
 ```
+
+### Unaligned Cascade Cropping (Two-Stage Networks)
+
+In multi-model cascades (e.g., Face Detection → Crop → Recognition), bounding box coordinates produced by the first stage are often unaligned (e.g., `x=13, width=45`). RGA will fail or produce skewed images if these unaligned coordinates are passed directly into `im_rect` for `imcrop` or `improcess`.
+
+**Workaround:**
+1. **Snap to aligned boundaries**: Expand the logical bounding box outwards to the nearest hardware-aligned boundaries (e.g., `floor(x)` to nearest 4-byte boundary, `ceil(width)` to nearest 4-byte boundary).
+2. **Hardware Crop**: Use RGA `imcrop` or `improcess` on this slightly larger, aligned region.
+3. **Software Trim (Optional)**: If the second-stage model is highly sensitive to the 1-3 pixels of extra context, perform a CPU `memcpy`-based trim on the much smaller output buffer. In most cases, the model tolerates the extra padding.
 
 **Critical: `importbuffer_fd()` is expensive — call once per buffer, reuse handles.**
 

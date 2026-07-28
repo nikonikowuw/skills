@@ -53,8 +53,10 @@ For **each stage**, check:
 
 - [ ] MPP decoder uses `MPP_BUFFER_EXTERNAL` mode (not internal/half-internal)
 - [ ] RGA input uses `importbuffer_fd(dma_fd)` (NOT `importbuffer_virtualaddr`)
+- [ ] RGA input dimensions and format align with hardware requirements (e.g. 4-byte/even width)
 - [ ] `importbuffer_fd` called **once** per buffer (not per frame in the hot path)
 - [ ] RGA output buffer is also a DMA-BUF fd (NOT CPU memory)
+- [ ] RGA operation is strictly validated via `imcheck()` before execution, especially for dynamic ROIs
 
 **Anti-patterns — classify as eliminable ✅ or unavoidable ❌:**
 
