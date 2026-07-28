@@ -8,6 +8,10 @@ description: >
 
 Build or tune Rockchip inference and media pipelines on RK3568, RK3576, and RK3588 Linux systems.
 
+## Always Read
+- If `.agents/context/rknn-context/` exists in the target project, read the active machine's `.md` file to load board-specific context BEFORE starting diagnosis or design.
+- If `.agents/rknn-model-context.md` exists, read it BEFORE making decisions about tensor layouts or normalization.
+
 ## Workflow
 
 1. Classify the task before collecting evidence. Source-only review, conversion planning, and API explanation can start without board access; mark board-dependent conclusions as unverified.
