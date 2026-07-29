@@ -56,11 +56,9 @@ def percentile(values, pct):
 
 
 def main():
-    parser = argparse.ArgumentParser(
-        description="Summarize stage,elapsed_us CSV or legacy stage=5.2ms timing logs."
-    )
-    parser.add_argument("timing_log")
-    args = parser.parse_args()
+    if len(sys.argv) != 2 or sys.argv[1] in ("-h", "--help"):
+        print("Usage: summarize-stage-latency.py <timing-log>")
+        return 0 if len(sys.argv) == 2 else 0
 
     try:
         samples = load_samples(args.timing_log)

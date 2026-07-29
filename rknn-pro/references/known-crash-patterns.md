@@ -11,7 +11,149 @@ installed BSP and headers.
 - **Community case**: issue report in an official repository; use as a search/reproduction clue
   unless a maintainer or official document confirms the cause.
 
-## RGA Memory, Layout, and Kernel-Facing Failures
+## RGA DMA-BUF Lifecycle Cascade Failure
+
+### Summary
+
+A single RGA `wrapbuffer_fd` lifecycle gap triggers a **5-stage cascade failure** that takes down the entire RGA pipeline. This is the most common cause of sustained RGA failures in production detection pipelines on RK3576 (and potentially RK3588).
+
+### Symptom Sequence (in order)
+
+```
+1. "Cannot get dst channel buffer" / "failed to map buffer"    ← ROOT TRIGGER
+2. "abort! finished 0 failed 0 running_abort 0 todo_abort 0"   ← pre-commit cancel
+3. "job hardware has timeout" + "INTR[0x840700]" + "soft reset" ← HW hang
+4. "no core match" → "job assign failed" → "task[0] job_commit failed" ← full pipeline stall
+5. "mpp_rkvdec2 ... timeout ... resetting"                      ← decoder back-pressure
+```
+
+Each step is an **effect**, not a new cause. Fix step 1 and the rest disappear.
+
+### Root Cause
+
+The algorithm pipeline uses `wrapbuffer_fd()` **per-frame** to wrap the destination DMA-BUF fd. Key pathology:
+
+```cpp
+// ❌ WRONG — per-frame wrapbuffer_fd
+target = wrapbuffer_fd(destination_fd, width, height, RK_FORMAT_RGB_888, width, height);
+```
+
+`wrapbuffer_fd()` internally calls `importbuffer_fd()` only when librga decides it needs a new handle — it may **reuse a cached handle** from a previous call. If the Engine (or OS) recycles file descriptors, the cache returns a stale handle:
+
+1. Frame N: `wrapbuffer_fd(fd_55, ...)` → librga creates and caches `handle_A` for `fd_55`.
+2. Frame N ends: The buffer pool reclaims the source buffer and closes `fd_55`.
+3. Frame N+1: The RKNN model's static input buffer (or a new source buffer) happens to be assigned `fd_55` by the kernel.
+4. Frame N+1 calls `wrapbuffer_fd(fd_55, ...)` → librga sees `fd_55` in its cache and returns the **stale `handle_A`**.
+5. RGA job submitted → Hardware tries to access memory via `handle_A` (which points to freed or invalid memory) → IOMMU page fault (`Cannot get dst channel buffer`).
+
+**The "Mixed Handle" Trap**: You might try to fix the destination buffer by importing it once and using `wrapbuffer_handle`, while leaving the dynamic source buffer as `wrapbuffer_fd`. **This will fail.** librga logs a warning: `librga only supports the use of handles only or no handles` and may abort or corrupt the operation. You must use handles for *all* buffers or *none*.
+
+**Why it's amplified on RK3576**: The RGA scheduler directs **99.2% of jobs to core 4** (core 8 is largely idle). A single bad job on core 4 triggers `soft reset` on that core, and because the scheduler doesn't route around the dead core, no core is available at all.
+
+### Evidence Patterns
+
+| Evidence | What to check |
+|---|---|
+| `Cannot get dst channel buffer` | The `dst_fd` passed to `wrapbuffer_fd` or `importbuffer_fd` was already closed or the underlying buffer was reclaimed |
+| `no core match` + `job assign failed` | Check `/proc/interrupts` — compare rga2 core counts; expect > 10:1 imbalance |
+| `soft reset complete` followed by more `Cannot get dst` | Confirm the same dst buffer lifecycle pattern persists after reset |
+| Per-frame `wrapbuffer_fd` without `importbuffer_fd` | Code pattern: search for `wrapbuffer_fd` calls in a loop/per-frame context with no matching `importbuffer_fd`/`releasebuffer_handle` |
+
+### Fix
+
+#### P0 — DMA-BUF buffer lifecycle (fix the root cause)
+
+Replace all `wrapbuffer_fd` calls with explicit handle management to bypass the internal fd-cache and satisfy the "all handles or no handles" rule.
+
+**1. Static Buffers (Destination / RKNN Input)**: Import once at initialization.
+
+```cpp
+// === Init (once per model load) ===
+rga_buffer_handle_t dst_handle = importbuffer_fd(dst_fd, dst_size);
+if (dst_handle == 0) { // Note: handle is int, 0 means failure in older versions, <=0 in newer
+    // handle error
+}
+
+// === Per frame ===
+rga_buffer_t dst = wrapbuffer_handle(dst_handle,
+                                     width, height,
+                                     RK_FORMAT_RGB_888,
+                                     width_stride, height_stride);
+// ... RGA operation ...
+// (do NOT releasebuffer_handle here — reuse the handle next frame)
+
+// === Shutdown ===
+releasebuffer_handle(dst_handle);
+```
+
+**2. Dynamic Buffers (Source from Engine)**: Import and release **every frame** using RAII.
+
+```cpp
+class LocalHandleGuard {
+public:
+    ~LocalHandleGuard() { if (handle >= 0) releasebuffer_handle(handle); }
+    int handle = -1;
+};
+
+// === Per-frame ===
+LocalHandleGuard src_guard;
+src_guard.handle = importbuffer_fd(source_fd, source_size); 
+// Or importbuffer_virtualaddr(source_ptr, source_size) if Host memory
+rga_buffer_t src = wrapbuffer_handle(src_guard.handle, ...);
+```
+
+**Why this works**: `importbuffer_fd()` creates a fresh, explicitly managed handle, bypassing librga's internal fd-cache. `releasebuffer_handle` ensures the handle is destroyed at the end of the frame, so recycled fds won't collide. Using `wrapbuffer_handle` for both source and destination satisfies librga's uniform handle requirement.
+
+#### P1 — RGA core load balancing (fix the amplification)
+
+```cpp
+// Set core affinity to use both RGA2 cores
+// Call once at app startup, after librga init
+im_set_core_mask(IM_SCHEDULER_RGA2_CORE0 | IM_SCHEDULER_RGA2_CORE1);
+// Or alternate frames:
+// if (frame_count % 2 == 0)
+//     im_set_core_mask(IM_SCHEDULER_RGA2_CORE0);
+// else
+//     im_set_core_mask(IM_SCHEDULER_RGA2_CORE1);
+```
+
+#### P2 — Error visibility
+
+Before calling `improcess`/`imresize`, add buffer size validation:
+
+```cpp
+// Validate DMA-BUF size against format requirements
+off_t buf_bytes = lseek(dst_fd, 0, SEEK_END);
+size_t required = static_cast<size_t>(width_stride) * height_stride * 3;  // RGB_888
+if (buf_bytes < static_cast<off_t>(required)) {
+    fprintf(stderr, "[RGA] dst buffer too small: %jd < %zu\n",
+            (intmax_t)buf_bytes, required);
+}
+```
+
+### RK3576-specific context
+
+| Property | Value |
+|---|---|
+| RGA cores | 2 (core 4 = `27920f00`, core 8 = `27930f00`) |
+| Hardware version | `3.e.19357` |
+| librga version | 1.10.4 |
+| Driver version | v1.3.9 |
+| Core mask enums | `IM_SCHEDULER_RGA2_CORE0`, `IM_SCHEDULER_RGA2_CORE1` |
+| Diagnosis | `cat /proc/interrupts | grep rga2` — compare core 4 vs core 8 |
+
+### Also check
+
+- Does the algorithm share the same DMA-BUF between RGA output and NPU input simultaneously? If so, add a fence or sync point (`rknn_mem_sync` with `RKNN_MEMORY_SYNC_FROM_DEVICE`).
+- Is `importbuffer_fd` called with the correct `size`? The size must match the full buffer accounting for stride alignment, not just `width * height * bpp`.
+- Is `imcheck` called before every operation? It catches stride/format/rect violations before they reach hardware.
+
+### References
+
+- Board baseline: `.agents/context/rknn-context/linaro-alip-rk3576-k6.1.118-dev.md` (RGA capability analysis section)
+- RGA API: [rga-api-reference.md](rga-api-reference.md)
+- Original diagnosis: RGA DMA-BUF lifecycle cascade failure on RK3576
+
 
 Rockchip's official RGA FAQ documents these patterns:
 

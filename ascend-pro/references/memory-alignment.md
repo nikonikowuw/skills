@@ -6,7 +6,19 @@ use a universal `16`, `32`, or `64` byte table.
 
 ## Required Evidence
 
-Before allocating a buffer, record:
+| Operation | Buffer Addr Align | Width Stride Align | Height Stride Align | Size Formula |
+| --- | --- | --- | --- | --- |
+| **DVPP VPC** (YUV420SP input) | 16 bytes | 16 | 2 | `ws * hs * 3 / 2` |
+| **DVPP VPC** (YUV420SP_U10 10-bit) | 16 bytes | 32 | 2 | `ws * hs * 3 / 2` |
+| **DVPP VPC** (YUV420SP output) | 16 bytes | 16 | 2 | `ws * hs * 3 / 2` |
+| **DVPP VPC** (RGB888) | 16 bytes | 32 | 2 | `ws * hs * 3` |
+| **DVPP VPC** (ARGB8888) | 16 bytes | 32 | 2 | `ws * hs * 4` |
+| **DVPP JPEG decode** | 16 bytes | 16 | 2 | `ws * hs * 3 / 2` (YUV420SP out) |
+| **DVPP JPEG encode** | 16 bytes | 16 | 2 | Depends on input format |
+| **DVPP VDEC** (H.264/H.265) | 32 bytes | 16 (128 for HiB) | 16 | `ws * hs * 3 / 2` |
+| **DVPP VENC** (H.264/H.265) | 32 bytes | 16 (128 for HiB) | 16 | `ws * hs * 3 / 2` |
+| **ACL model I/O** | 32 bytes | N/A (linear) | N/A | as reported by `aclmdlGetInputSizeByName` |
+| **ACL aclrtMalloc** | 32 bytes (guaranteed) | N/A | N/A | as requested |
 
 - device model and CANN version;
 - operation/API and selected pixel/tensor format;

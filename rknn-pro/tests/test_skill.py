@@ -90,6 +90,22 @@ API version: 2.3.2
         self.assertIn("Device identifier: unknown", rendered)
         self.assertIn("Environment fingerprint:", rendered)
 
+    def test_machine_id_extraction_and_default_output_path(self):
+        baseline = load_script("render-project-baseline.py")
+        evidence_with_serial = "Serial : RK3588_SERIAL_12345\nrockchip,rk3588\n"
+        self.assertEqual(baseline.extract_machine_id(evidence_with_serial), "rk3588_serial_12345")
+        path_serial = baseline.choose_default_output_path(evidence_with_serial)
+        self.assertTrue(str(path_serial).endswith(".agents/context/rknn-context/rk3588_serial_12345.md"))
+
+        evidence_no_serial = "rockchip,rk3568\nLinux board 6.1.0 #1\n"
+        fingerprint = baseline.environment_fingerprint(evidence_no_serial)
+        self.assertEqual(baseline.extract_machine_id(evidence_no_serial), fingerprint)
+        path_no_serial = baseline.choose_default_output_path(evidence_no_serial)
+        self.assertTrue(str(path_no_serial).endswith(f".agents/context/rknn-context/{fingerprint}.md"))
+
+        path_override = baseline.choose_default_output_path(evidence_with_serial, context_id_override="custom-board-01")
+        self.assertTrue(str(path_override).endswith(".agents/context/rknn-context/custom-board-01.md"))
+
     def test_baseline_parses_driver_device_fallback_and_library_directories(self):
         baseline = load_script("render-project-baseline.py")
         evidence = """$ board serial candidates

@@ -6,7 +6,7 @@ image processing. Use the **im2d API** (modern, recommended).
 ## RGA Capabilities and Limitations
 
 | Common fixed-function building blocks | Hardware/library/version-specific; verify | Not a general RGA contract |
-|---|---|---|
+| --- | --- | --- |
 | Crop, scale, format conversion, and color-space conversion | Exact input/output formats, CSC modes, interpolation, scale ratios, and resolutions | Arbitrary GPU-style shaders or user kernels |
 | 90/180/270 rotation, mirror, and translation | Alpha blend, color key, color fill/palette, and ROP | Arbitrary affine matrices, perspective, or homography |
 | DMA-BUF-backed source/destination processing | Quantize, rectangle/border, mosaic, OSD, Gaussian blur on listed hardware | General convolution/filter, morphology, histogram/statistics, or text/shape rasterization |
@@ -20,7 +20,7 @@ choose a measured CPU, GPU, NPU, or multi-stage fallback appropriate to the appl
 ### When to use RGA vs CPU vs NPU
 
 | Criterion | RGA | CPU (NEON) | NPU (RKNN) |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | Resize + CSC | Fixed-function candidate when the exact combination validates | Flexible fallback | Model-specific and usually unnecessary |
 | Crop | Can retain DMA-BUF backing; ownership/sync still required | Flexible fallback | Usually unnecessary |
 | Rotate / Flip | Common fixed-function operation | Flexible fallback | Model-dependent |
@@ -76,7 +76,7 @@ rga_buffer_t wrapbuffer_handle(rga_buffer_handle_t handle, int width, int height
 Create an `rga_buffer_t` from a previously imported buffer handle.
 
 | Parameter | Description |
-|---|---|
+| --- | --- |
 | `handle` | Handle from `importbuffer_fd` |
 | `width` | Image width in pixels |
 | `height` | Image height in pixels |
@@ -120,7 +120,7 @@ IM_STATUS imresize(const rga_buffer_t src, rga_buffer_t dst, double fx, double f
 Resize image from `src` to `dst`.
 
 | Parameter | Description |
-|---|---|
+| --- | --- |
 | `fx`, `fy` | Scale factors (0.0 = use dst size, >0 = scale factor) |
 | `interpolation` | `INTER_LINEAR` (default), `INTER_CUBIC`, `INTER_NEAREST` |
 | `sync` | 1 = synchronous (wait for completion), 0 = async |
@@ -163,6 +163,7 @@ IM_STATUS imcvtcolor(rga_buffer_t src, rga_buffer_t dst, int sfmt, int dfmt, int
 Color space conversion. `sfmt`/`dfmt` are `RK_FORMAT_*` enums.
 
 Common conversions:
+
 - `RK_FORMAT_YCbCr_420_SP` (NV12) → `RK_FORMAT_RGB_888`
 - `RK_FORMAT_RGB_888` → `RK_FORMAT_YCbCr_420_SP`
 - `RK_FORMAT_RGBA_8888` → `RK_FORMAT_RGB_888`
@@ -174,7 +175,7 @@ IM_STATUS imflip(const rga_buffer_t src, rga_buffer_t dst, int mode, int sync);
 ```
 
 | `mode` | Description |
-|---|---|
+| --- | --- |
 | `IM_HAL_TRANSFORM_FLIP_H` | Horizontal flip |
 | `IM_HAL_TRANSFORM_FLIP_V` | Vertical flip |
 | `IM_HAL_TRANSFORM_FLIP_H_V` | Both |
@@ -186,7 +187,7 @@ IM_STATUS imrotate(const rga_buffer_t src, rga_buffer_t dst, int rotation, int s
 ```
 
 | `rotation` | Description |
-|---|---|
+| --- | --- |
 | `IM_HAL_TRANSFORM_ROT_90` | 90° clockwise |
 | `IM_HAL_TRANSFORM_ROT_180` | 180° |
 | `IM_HAL_TRANSFORM_ROT_270` | 270° clockwise |
@@ -221,7 +222,7 @@ This is especially important when buffer dimensions or formats come from runtime
 ## Pixel Formats (`RK_FORMAT_*`)
 
 | Enum | Description | Bytes per pixel |
-|---|---|---|
+| --- | --- | --- |
 | `RK_FORMAT_RGB_565` | RGB 565 | 2 |
 | `RK_FORMAT_RGB_888` | RGB 888 | 3 |
 | `RK_FORMAT_RGBA_8888` | RGBA 8888 | 4 |
@@ -236,7 +237,7 @@ This is especially important when buffer dimensions or formats come from runtime
 Raster alignment depends on hardware generation and format:
 
 | Core family | RGBA8888 width stride | RGB565 width stride | RGB888 width stride | NV12/NV21 width stride |
-|---|---:|---:|---:|---:|
+| --- | ---: | ---: | ---: | ---: |
 | RGA2 family | no additional pixel multiple | 2 | 4 | 4 |
 | RGA3 | 4 | 8 | 16 | 16 |
 
@@ -255,6 +256,7 @@ rectangle that violates the selected source format/core/read-mode constraints. F
 byte-based ROI rule.
 
 **Workaround:**
+
 1. Determine pixel-coordinate multiples from the source format, selected read mode, and eligible
    hardware cores. Do not confuse byte-stride alignment with pixel-coordinate alignment.
 2. Expand with overflow-checked align-down/align-up operations, then clamp to source bounds while
@@ -339,12 +341,53 @@ releasebuffer_handle(dst_handle);
 return ret == IM_STATUS_SUCCESS ? 0 : -1;
 ```
 
-`CheckedSizeToInt` and `CheckedUint32ToInt` are project helpers that reject values above `INT_MAX`;
-do not implicitly narrow allocation sizes or strides to librga's `int` parameters.
+---
 
-## Source Snapshot
+## Troubleshooting RGA Failures
 
-Validated 2026-07-28 against librga commit
-[`2b32edcb97b601b25683e2941d888c8515da6d55`](https://github.com/airockchip/librga/tree/2b32edcb97b601b25683e2941d888c8515da6d55),
-including the raster alignment table, scheduler enums, `imconfig`, and the production warning. The
-installed header, userspace library, driver, detected cores, and `imcheck` result remain authoritative.
+### RGA DMA-BUF lifecycle cascade failure
+
+**The single most common cause of sustained RGA crashes in production inference pipelines.**
+
+#### Quick diagnostic
+
+Check `/proc/interrupts` on the device:
+
+```bash
+grep rga2 /proc/interrupts | awk '{
+    total=0; for(i=3;i<=NF-2;i++) total+=$i;
+    for(i=3;i<=NF-2;i++) printf "  %s core %s: %s (%.1f%%)\n", $(NF), i-3, $i, ($i/total)*100
+}'
+```
+
+> If core 4 is >90% and core 8 is <10%, the **imbalance amplified the cascade failure** — fix the DMA-BUF lifecycle first, then the load balancing.
+
+#### Symptom → Root Cause Map
+
+| dmesg pattern | What it really means |
+| --- | --- |
+| `Cannot get dst channel buffer` | DMA-BUF fd was `close()`d before RGA finished with it. **Root trigger.** |
+| `failed to map buffer` | Kernel IOMMU cannot resolve the fd to physical pages. |
+| `abort! finished 0 failed 0 ...` | RGA pre-commit validation cancelled the job before hardware touched it. |
+| `job hardware has timeout` → `INTR[0x840700]` | IOMMU page fault caused hardware hang on the target core. |
+| `soft reset complete` | Kernel recovered the hung core. |
+| `no core match` | Scheduler has no available core — the one that handles 99% of jobs is in reset. |
+| `mpp_rkvdec2 timeout/resetting` | Decoder pipeline back-pressured because RGA is not consuming frames. |
+
+#### Code audit checklist
+
+- [ ] Are all `wrapbuffer_fd()` calls paired with a one-time `importbuffer_fd()` per buffer pool lifecycle?
+- [ ] Or does the code call `wrapbuffer_fd()` **every frame** without retaining the handle? (🚨 Red flag)
+- [ ] Is `importbuffer_fd()` called with the full stride-derived size, not just `width * height * bpp`?
+- [ ] Is `imcheck()` called before every `improcess`/`imresize`?
+- [ ] Does the destination DMA-BUF double as an NPU input buffer? If so, is there a sync fence?
+
+#### Fix summary
+
+```
+P0: importbuffer_fd() once per pool → wrapbuffer_handle() per frame → releasebuffer_handle() at shutdown
+P1: im_set_core_mask() to balance across all RGA2 cores
+P2: Validate dst buffer size and call imcheck() before every operation
+```
+
+See `known-crash-patterns.md` section "RGA DMA-BUF Lifecycle Cascade Failure" for the full diagnosis and code examples.

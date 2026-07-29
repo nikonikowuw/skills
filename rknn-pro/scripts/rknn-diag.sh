@@ -99,12 +99,13 @@ section "Drivers and device nodes"
 capture_shell "Rockchip-related modules" 'lsmod 2>/dev/null | grep -Ei "rockchip|rga|mpp|vcodec|rknpu|iep"'
 capture_shell "media, RGA, NPU, DRM, and DMA-heap nodes" 'ls -l /dev/rknpu* /dev/rknn* /dev/rga* /dev/media* /dev/video* /dev/dri/renderD* /dev/dma_heap/* 2>/dev/null'
 capture_shell "RGA driver version" 'cat /sys/kernel/debug/rkrga/driver_version 2>/dev/null || cat /proc/rkrga/driver_version 2>/dev/null'
+capture_shell "NPU driver version" 'cat /sys/kernel/debug/rknpu/version 2>/dev/null'
 capture_shell "recent Rockchip driver messages" 'dmesg 2>/dev/null | grep -Ei "rknpu|rknn|rga|mpp|vcodec|dma.?buf" | tail -n 120'
 
 section "Userspace libraries and headers"
 capture_shell "dynamic linker Rockchip entries" 'ldconfig -p 2>/dev/null | grep -Ei "rknn|rga|rockchip_mpp|libmpp"'
 capture_shell "Rockchip library candidates" 'find /usr /usr/local /opt -maxdepth 6 -type f \( -name "librknnrt.so*" -o -name "librga.so*" -o -name "librockchip_mpp.so*" -o -name "libmpp.so*" \) 2>/dev/null'
-capture_shell "Rockchip header candidates" 'find /usr /usr/local /opt -maxdepth 7 -type f \( -name "rknn_api.h" -o -name "im2d.h" -o -name "rk_mpi.h" -o -name "mpp_buffer.h" \) 2>/dev/null'
+capture_shell "Rockchip header candidates" 'find /usr /usr/local /opt -maxdepth 7 -type f \( -name "rknn_api.h" -o -name "rknn_matmul_api.h" -o -name "im2d.h" -o -name "RgaApi.h" -o -name "rga.h" -o -name "rk_mpi.h" -o -name "mpp_buffer.h" -o -name "mpp_err.h" \) 2>/dev/null'
 capture_shell "Runtime version strings" 'for lib in /usr/lib*/librknnrt.so* /usr/local/lib*/librknnrt.so* /opt/*/lib*/librknnrt.so*; do if [ -r "$lib" ]; then echo "-- $lib"; strings "$lib" 2>/dev/null | grep -Ei "api version|driver version|librknn|rknnrt" | head -n 30; fi; done'
 capture_shell "RGA and MPP version strings" 'for lib in /usr/lib*/librga.so* /usr/lib*/librockchip_mpp.so* /usr/lib*/libmpp.so* /usr/local/lib*/librga.so* /usr/local/lib*/librockchip_mpp.so*; do if [ -r "$lib" ]; then echo "-- $lib"; strings "$lib" 2>/dev/null | grep -Ei "version|mpp|rga_api" | head -n 20; fi; done'
 

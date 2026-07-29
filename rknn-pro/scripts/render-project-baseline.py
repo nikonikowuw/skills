@@ -6,6 +6,7 @@ import sys
 from pathlib import Path
 
 DEFAULT_OUTPUT_CANDIDATES = (
+    ".agents/context/rknn-context/{machine_id}.md",
     ".agents/rknn-context.md",
     ".agent-context/rockchip-baseline.md",
     "docs/rockchip-baseline.md",
@@ -28,7 +29,7 @@ MODULE_PATTERN = re.compile(r"^(rockchip\S*|rga\S*|mpp\S*|vcodec\S*|rknpu\S*|iep
 NODE_PATTERN = re.compile(r"/dev/(?:media\d+|video\d+|rga|dri/renderD\d+)")
 HEADER_PATTERN = re.compile(r"(?:(?:-I)|include_directories\(|target_include_directories\()[^)\\\n]*", re.IGNORECASE)
 LIBROOT_PATTERN = re.compile(r"(?:(?:-L)|link_directories\(|target_link_directories\()[^)\\\n]*", re.IGNORECASE)
-SDK_PATH_PATTERN = re.compile(r"(/[^\s'\"()]*?(?:rknn|rockchip|rga|mpp|sdk)[^\s'\"()]*)", re.IGNORECASE)
+SDK_PATH_PATTERN = re.compile(r"(/[^\s'\"()]*?(?:rknn|rockchip|rga|mpp|sdk|include)[^\s'\"()]*(?:\.h|\.hpp|\.so)?)", re.IGNORECASE)
 ABS_PATH_PATTERN = re.compile(r"/[^\s'\"()]+")
 VERSION_LINE_PATTERN = re.compile(
     r"^.*(?:api\s+version|driver\s+version|librknnrt|rknnrt\s+version|rga_api|mpp\s+version).*$",
@@ -61,14 +62,27 @@ def load_text(path_arg):
     return sys.stdin.read()
 
 
-def choose_default_output_path():
+def sanitize_for_filename(value):
+    value = value.lower().strip()
+    value = re.sub(r"[^a-z0-9._-]", "_", value)
+    return value[:64] or "unknown"
+
+
+def extract_machine_id(text):
+    device_id = detect_device_id(text)
+    if device_id != "unknown":
+        return sanitize_for_filename(device_id)
+    fingerprint = environment_fingerprint(text)
+    return sanitize_for_filename(fingerprint)
+
+
+def choose_default_output_path(text, context_id_override=None):
     cwd = Path.cwd()
-    for candidate in DEFAULT_OUTPUT_CANDIDATES:
-        path = cwd / candidate
-        parent = path.parent
-        if parent.exists() and parent.is_dir():
-            return path
-    return cwd / DEFAULT_OUTPUT_CANDIDATES[0]
+    if context_id_override:
+        machine_id = sanitize_for_filename(context_id_override)
+    else:
+        machine_id = extract_machine_id(text)
+    return cwd / ".agents" / "context" / "rknn-context" / f"{machine_id}.md"
 
 
 def first_match(pattern, text, group=1, default="unknown"):
@@ -196,17 +210,25 @@ def summarize_list(values):
     return ", ".join(values) if values else "unknown"
 
 
+
+def detect_npu_driver(text):
+    match = re.search(r"(?:RKNPU|rknpu|NPU)[^\n]*version[^\n]+", text, re.IGNORECASE)
+    if match:
+        return match.group(0).strip()
+    return "unknown"
+
 def environment_fingerprint(text):
     libraries = detect_libraries(text)
     fields = [
-        *(value.upper() for value in collect_unique(SOC_PATTERN, text, 1)),
-        *collect_unique(KERNEL_PATTERN, text),
-        *collect_unique(OS_RELEASE_PATTERN, text, 1),
-        *collect_unique(RGA_DRIVER_PATTERN, text, 1),
-        *libraries["librga"],
-        *libraries["librknnrt"],
-        *libraries["libmpp"],
-        *detect_header_roots(text, limit=None),
+        detect_soc(text),
+        first_match(KERNEL_PATTERN, text),
+        first_match(OS_RELEASE_PATTERN, text),
+        first_match(RGA_DRIVER_PATTERN, text),
+        detect_npu_driver(text),
+        *detect_libraries(text)["librga"],
+        *detect_libraries(text)["librknnrt"],
+        *detect_libraries(text)["libmpp"],
+        *detect_header_roots(text),
         *collect_unique(VERSION_LINE_PATTERN, text),
     ]
     canonical = {
@@ -240,6 +262,7 @@ def summarize_context(label, text):
         f"- RGA driver: {first_match(RGA_DRIVER_PATTERN, text)}",
         f"- V4L2 or media nodes: {summarize_list(media_nodes)}",
         f"- DRM or display nodes: {summarize_list(drm_nodes)}",
+        f"- NPU driver: {detect_npu_driver(text)}",
         f"- Other relevant modules: {summarize_list(modules)}",
         f"- librga: {summarize_list(libraries['librga'])}",
         f"- librknnrt: {summarize_list(libraries['librknnrt'])}",
@@ -324,6 +347,7 @@ def build_baseline(text):
         f"- RGA driver: {rga_driver}",
         f"- V4L2 or media nodes: {summarize_list(media_nodes)}",
         f"- DRM or display nodes: {summarize_list(drm_nodes)}",
+        f"- NPU driver: {detect_npu_driver(text)}",
         f"- Other relevant modules: {summarize_list(modules)}",
         "",
         "Userspace library sightings",
@@ -385,7 +409,8 @@ def main():
     parser = argparse.ArgumentParser(description="Render a Rockchip project baseline from pasted device evidence.")
     parser.add_argument("input", nargs="?", help="Optional text file containing pasted device evidence. Reads stdin if omitted.")
     parser.add_argument("-o", "--output", help="Optional markdown output file path.")
-    parser.add_argument("--write-default", action="store_true", help="Write to the recommended project path. Prefers .agents/rknn-context.md, then .agent-context/rockchip-baseline.md, then docs/rockchip-baseline.md.")
+    parser.add_argument("--context-id", help="Optional machine/context identifier to override auto-detected machine_id in output filename.")
+    parser.add_argument("--write-default", action="store_true", help="Write to .agents/context/rknn-context/{machine_id}.md using auto-detected machine_id or --context-id.")
     args = parser.parse_args()
 
     text = load_text(args.input)
@@ -402,7 +427,7 @@ def main():
     if args.output:
         output_path = Path(args.output)
     elif args.write_default:
-        output_path = choose_default_output_path()
+        output_path = choose_default_output_path(text, context_id_override=args.context_id)
 
     if output_path is not None:
         output_path.parent.mkdir(parents=True, exist_ok=True)

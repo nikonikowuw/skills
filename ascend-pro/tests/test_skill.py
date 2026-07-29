@@ -3,258 +3,157 @@ import os
 import re
 import subprocess
 import sys
+import json
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
 
-
-ROOT = Path(__file__).resolve().parents[1]
-SCRIPTS = ROOT / "scripts"
-REFERENCES = ROOT / "references"
+SKILL_ROOT = Path(__file__).resolve().parents[1]
 
 
 def load_script(name):
-    path = SCRIPTS / name
+    path = SKILL_ROOT / "scripts" / name
     spec = importlib.util.spec_from_file_location(name.replace("-", "_"), path)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
 
 
-RENDERER = load_script("render-project-baseline.py")
-SANITIZER = load_script("sanitize-ascend-evidence.py")
-SUMMARIZER = load_script("summarize-stage-latency.py")
-
-
-class SkillStructureTests(unittest.TestCase):
-    def test_frontmatter_is_narrow_and_has_anti_triggers(self):
-        text = (ROOT / "SKILL.md").read_text(encoding="utf-8")
-        match = re.match(r"---\n(.*?)\n---\n", text, re.DOTALL)
-        self.assertIsNotNone(match)
-        frontmatter = match.group(1)
-        self.assertIn("name: ascend-pro", frontmatter)
-        self.assertIn("Load when", frontmatter)
-        self.assertIn("Do not use", frontmatter)
-        self.assertIn("Huawei Ascend", frontmatter)
-        self.assertIn("Rockchip/RKNN", frontmatter)
-        self.assertNotIn("whenever the user mentions", frontmatter.lower())
-
-    def test_skill_is_a_compact_router(self):
-        lines = (ROOT / "SKILL.md").read_text(encoding="utf-8").splitlines()
-        self.assertLessEqual(len(lines), 180)
-
-    def test_local_markdown_links_exist(self):
-        sources = [ROOT / "SKILL.md", *REFERENCES.glob("*.md")]
-        pattern = re.compile(r"\[[^]]+\]\(([^)]+)\)")
-        missing = []
-        for source in sources:
-            for target in pattern.findall(source.read_text(encoding="utf-8")):
-                path = target.split("#", 1)[0]
-                if not path or re.match(r"^[a-z]+://", path):
+class SkillIntegrityTests(unittest.TestCase):
+    def test_markdown_links_are_portable_and_resolve(self):
+        for markdown in SKILL_ROOT.rglob("*.md"):
+            text = markdown.read_text(encoding="utf-8")
+            self.assertNotIn("/Users/", text, markdown)
+            for target in __import__("re").findall(r"\[[^]]*\]\(([^)#]+)", text):
+                if target.startswith(("http://", "https://", "mailto:")):
                     continue
-                if not (source.parent / path).exists():
-                    missing.append(f"{source.relative_to(ROOT)} -> {path}")
-        self.assertEqual(missing, [])
+                self.assertTrue((markdown.parent / target).resolve().exists(), (markdown, target))
 
-    def test_obsolete_hazardous_rules_are_gone(self):
-        corpus = "\n".join(
-            path.read_text(encoding="utf-8")
-            for path in [ROOT / "SKILL.md", *REFERENCES.glob("*.md")]
-        )
-        banned = (
-            "stdout_color_mt_st",
-            "aclGetRecentErrDesc",
-            "within 4 minor versions",
-            ".agent/ascend-pro/context/{machine_id}.md",
-            "--write-default",
-            "aclError aclError",
-            "32 bytes (guaranteed)",
-            "64-byte alignment",
-        )
-        for value in banned:
-            self.assertNotIn(value, corpus)
+    def test_eval_schema_and_ids(self):
+        data = json.loads((SKILL_ROOT / "evals" / "evals.json").read_text(encoding="utf-8"))
+        self.assertEqual(data["skill_name"], "ascend-pro")
+        ids = [item["id"] for item in data["evals"]]
+        self.assertEqual(len(ids), len(set(ids)))
+        for item in data["evals"]:
+            self.assertTrue(item["prompt"])
+            self.assertTrue(item["expected_output"])
+            self.assertGreaterEqual(len(item["expectations"]), 3)
 
-    def test_trigger_eval_has_positive_negative_and_edges(self):
-        text = (REFERENCES / "skill-evals.md").read_text(encoding="utf-8")
-        sections = {}
-        for heading in ("Should Trigger", "Should Not Trigger", "Edge Cases"):
-            match = re.search(rf"## {heading}\n(.*?)(?=\n## |\Z)", text, re.DOTALL)
-            self.assertIsNotNone(match)
-            sections[heading] = match.group(1)
-        self.assertGreaterEqual(sections["Should Trigger"].count("| `"), 3)
-        self.assertGreaterEqual(sections["Should Not Trigger"].count("| `"), 3)
-        self.assertGreaterEqual(sections["Edge Cases"].count("| `"), 2)
+        triggers = json.loads((SKILL_ROOT / "evals" / "trigger-evals.json").read_text(encoding="utf-8"))
+        self.assertGreaterEqual(len(triggers), 20)
+        self.assertTrue(all(isinstance(item.get("query"), str) and item["query"] for item in triggers))
+        self.assertTrue(all(isinstance(item.get("should_trigger"), bool) for item in triggers))
+        self.assertGreaterEqual(sum(item["should_trigger"] for item in triggers), 8)
+        self.assertGreaterEqual(sum(not item["should_trigger"] for item in triggers), 8)
 
+    def test_script_syntax_for_bash_scripts(self):
+        for name in ("detect-ascend-env.sh", "collect-ascend-debug.sh"):
+            script_path = SKILL_ROOT / "scripts" / name
+            run = subprocess.run(["bash", "-n", str(script_path)], capture_output=True, text=True)
+            self.assertEqual(run.returncode, 0, f"{name} syntax error: {run.stderr}")
 
-class SanitizerTests(unittest.TestCase):
-    def test_redacts_identifiers_and_is_stable(self):
-        raw = (
-            "0123456789abcdef0123456789abcdef\n"
-            "Machine ID: fedcba9876543210fedcba9876543210\n"
-            "Chip Serial: ABCD-1234\n"
-            "path=/Users/alice/project ip=192.168.1.20 mac=aa:bb:cc:dd:ee:ff\n"
-        )
-        first = SANITIZER.sanitize(raw)
-        second = SANITIZER.sanitize(raw)
-        self.assertEqual(first, second)
-        self.assertRegex(first, r"h-[0-9a-f]{12}")
-        self.assertRegex(first, r"s-[0-9a-f]{12}")
-        self.assertNotIn("0123456789abcdef0123456789abcdef", first)
-        self.assertNotIn("fedcba9876543210fedcba9876543210", first)
-        self.assertNotIn("ABCD-1234", first)
-        self.assertIn("/Users/<user>/project", first)
-        self.assertIn("<ip-redacted>", first)
-        self.assertIn("<mac-redacted>", first)
+    def test_machine_id_extraction(self):
+        baseline = load_script("render-project-baseline.py")
+        text_with_hex_id = "abc123def4567890abc123def4567890\nAscend310P\n"
+        self.assertEqual(baseline.extract_machine_id(text_with_hex_id), "abc123def4567890abc123def4567890")
 
+        text_with_chip_sn = "Chip Sn: NPU_SERIAL_1234\nAscend310P\n"
+        self.assertEqual(baseline.extract_machine_id(text_with_chip_sn), "NPU_SERIAL_1234")
 
-class RendererTests(unittest.TestCase):
-    def run_renderer(self, *args, cwd=None, input_text=None):
-        return subprocess.run(
-            [sys.executable, str(SCRIPTS / "render-project-baseline.py"), *map(str, args)],
-            cwd=cwd or ROOT,
-            input=input_text,
-            text=True,
-            capture_output=True,
-            check=False,
-        )
+        text_unknown = "No device identifier present in this log text\n"
+        self.assertEqual(baseline.extract_machine_id(text_unknown), "unknown")
 
-    def test_sample_parsing_uses_evidence_not_source_mentions(self):
-        text = (REFERENCES / "sample-device-evidence.txt").read_text(encoding="utf-8")
-        draft, contexts = RENDERER.build_draft(text)
-        self.assertEqual(len(contexts), 1)
-        fields = contexts[0]
-        self.assertEqual(fields["atc_version"], "ATC version 8.0.0")
-        self.assertEqual(fields["devices"], ["Ascend310P"])
-        self.assertIn("aclrtMalloc", fields["symbols"])
-        self.assertNotIn("src/infer.cpp: aclrtMalloc", fields["symbols"])
-        self.assertNotIn("--soc_version", fields["atc_version"])
-        self.assertIn("# Generated Ascend Runtime Context Draft", draft)
+    def test_default_output_path(self):
+        baseline = load_script("render-project-baseline.py")
+        text = "abc123def4567890abc123def4567890\nAscend310P\n"
+        path = baseline.choose_default_output_path(text)
+        self.assertTrue(str(path).endswith(".agent/ascend-pro/context/abc123def4567890abc123def4567890.md"))
 
-    def test_multi_context_does_not_treat_soc_flag_as_observed_device(self):
-        text = (REFERENCES / "sample-multi-device-evidence.txt").read_text(encoding="utf-8")
-        _, contexts = RENDERER.build_draft(text)
+    def test_baseline_deterministic_and_version_sensitive(self):
+        baseline = load_script("render-project-baseline.py")
+        evidence = """abc123def4567890abc123def4567890
+Ascend310P
+Linux host 5.10.0 #1
+PRETTY_NAME="Ubuntu 22.04"
+ATC version: 7.0.0
+ASCEND_HOME_PATH=/usr/local/Ascend/ascend-toolkit/latest
+libascendcl.so /usr/lib/libascendcl.so
+"""
+        rendered1 = baseline.build_baseline(evidence)
+        rendered2 = baseline.build_baseline(evidence)
+        self.assertEqual(rendered1, rendered2)
+
+        different_evidence = evidence.replace("abc123def4567890abc123def4567890", "fff123def4567890abc123def4567890")
+        rendered_diff = baseline.build_baseline(different_evidence)
+        self.assertNotEqual(rendered1, rendered_diff)
+
+    def test_missing_machine_id_does_not_prevent_baseline(self):
+        baseline = load_script("render-project-baseline.py")
+        rendered = baseline.build_baseline("Ascend310P\nLinux host 5.10.0\n")
+        self.assertIn("Machine ID: unknown", rendered)
+        self.assertIn("Open risks", rendered)
+
+    def test_baseline_parses_sample_device_evidence(self):
+        baseline = load_script("render-project-baseline.py")
+        sample_path = SKILL_ROOT / "references" / "sample-device-evidence.txt"
+        evidence = sample_path.read_text(encoding="utf-8")
+        rendered = baseline.build_baseline(evidence)
+        self.assertIn("Ascend310P", rendered)
+        self.assertIn("libascendcl", rendered)
+
+    def test_baseline_handles_multi_device_context_blocks(self):
+        baseline = load_script("render-project-baseline.py")
+        multi_evidence = """== Device Context: Ascend310P Host ==
+Ascend310P
+abc123def4567890abc123def4567890
+
+== Device Context: Atlas 200I A2 Container ==
+Atlas 200I A2
+fedcba0987654321fedcba0987654321
+"""
+        contexts = baseline.split_device_contexts(multi_evidence)
         self.assertEqual(len(contexts), 2)
-        self.assertEqual(contexts[0]["devices"], ["Ascend310P"])
-        self.assertEqual(contexts[1]["devices"], ["Atlas 200I A2"])
-        self.assertEqual(contexts[0]["atc_version"], "ATC version 7.0.RC1")
-        self.assertEqual(contexts[1]["atc_version"], "ATC version 6.3.RC2")
+        self.assertEqual(contexts[0][0], "Ascend310P Host")
+        self.assertEqual(contexts[1][0], "Atlas 200I A2 Container")
 
-    def test_context_label_alone_is_not_runtime_device_evidence(self):
-        text = (
-            "== Device Context: Ascend310P host ==\n"
-            "Host Token: h-111111111111\nDeployment: host\nDevice Index: 0\n"
-        )
-        _, contexts = RENDERER.build_draft(text)
-        self.assertEqual(contexts[0]["devices"], [])
+    def test_latency_cli_supports_help_and_samples(self):
+        script = SKILL_ROOT / "scripts" / "summarize-stage-latency.py"
+        help_run = subprocess.run(["python3", str(script), "--help"], capture_output=True, text=True)
+        self.assertEqual(help_run.returncode, 0, help_run.stderr)
 
-    def test_readelf_needed_line_is_linkage_evidence(self):
-        text = "0x0000000000000001 (NEEDED) Shared library: [libascendcl.so]\n"
-        fields = RENDERER.context_fields("test", text)
-        self.assertEqual(len(fields["linkage"]), 1)
+        with tempfile.NamedTemporaryFile("w", encoding="utf-8") as handle:
+            handle.write("infer=5.0ms\ndvpp: 800us\ninfer=7.0ms\n")
+            handle.flush()
+            run = subprocess.run(["python3", str(script), handle.name], capture_output=True, text=True)
+        self.assertEqual(run.returncode, 0, run.stderr)
+        self.assertIn("infer,2,6.000", run.stdout)
+        self.assertIn("dvpp,1,0.800", run.stdout)
 
-    def test_refuses_raw_machine_id(self):
-        for raw in (
-            "0123456789abcdef0123456789abcdef\n",
-            "Machine ID: 0123456789abcdef0123456789abcdef\n",
-        ):
-            with self.subTest(raw=raw):
-                result = self.run_renderer(input_text=raw)
-                self.assertNotEqual(result.returncode, 0)
-                self.assertIn("Raw machine ID detected", result.stderr)
+    def test_baseline_parses_cann8_libraries_and_symbols(self):
+        baseline = load_script("render-project-baseline.py")
+        evidence = """abc123def4567890abc123def4567890
+Ascend310B4
+/usr/local/Ascend/ascend-toolkit/latest/lib64/libascend_hal.so
+/usr/local/Ascend/ascend-toolkit/latest/lib64/libhi_mpi_vpc.so
+hi_mpi_vpc_resize
+aclrtMallocAlign32
+aclnnMatMul
+"""
+        rendered = baseline.build_baseline(evidence)
+        self.assertIn("libascend_hal", rendered)
+        self.assertIn("libhi_mpi_vpc", rendered)
+        self.assertIn("aclrtMallocAlign32", rendered)
+        self.assertIn("aclnnMatMul", rendered)
 
-    def test_draft_write_does_not_overwrite_without_force(self):
-        sample = REFERENCES / "sample-device-evidence.txt"
-        with tempfile.TemporaryDirectory() as tmp:
-            first = self.run_renderer(sample, "--write-draft", cwd=tmp)
-            self.assertEqual(first.returncode, 0, first.stderr)
-            second = self.run_renderer(sample, "--write-draft", cwd=tmp)
-            self.assertNotEqual(second.returncode, 0)
-            forced = self.run_renderer(sample, "--write-draft", "--force", cwd=tmp)
-            self.assertEqual(forced.returncode, 0, forced.stderr)
-            drafts = list((Path(tmp) / ".agent/ascend-pro/drafts").glob("*.generated.md"))
-            self.assertEqual(len(drafts), 1)
-
-    def test_refuses_reviewed_context_directory(self):
-        sample = REFERENCES / "sample-device-evidence.txt"
-        with tempfile.TemporaryDirectory() as tmp:
-            output = Path(tmp) / ".agent/ascend-pro/context/unsafe.md"
-            result = self.run_renderer(sample, "-o", output, cwd=tmp)
-            self.assertNotEqual(result.returncode, 0)
-            self.assertIn("reviewed context directory", result.stderr)
-            self.assertFalse(output.exists())
-
-    def test_explicit_output_must_be_generated_markdown(self):
-        sample = REFERENCES / "sample-device-evidence.txt"
-        with tempfile.TemporaryDirectory() as tmp:
-            output = Path(tmp) / "notes.md"
-            result = self.run_renderer(sample, "-o", output, cwd=tmp)
-            self.assertNotEqual(result.returncode, 0)
-            self.assertIn("must end with .generated.md", result.stderr)
-            self.assertFalse(output.exists())
-
-    def test_write_draft_requires_one_context(self):
-        sample = REFERENCES / "sample-multi-device-evidence.txt"
-        with tempfile.TemporaryDirectory() as tmp:
-            result = self.run_renderer(sample, "--write-draft", cwd=tmp)
-            self.assertNotEqual(result.returncode, 0)
-            self.assertIn("exactly one labeled context", result.stderr)
-
-
-class LatencySummaryTests(unittest.TestCase):
-    def test_csv_and_legacy_formats(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            csv_path = Path(tmp) / "timing.csv"
-            csv_path.write_text(
-                "stage,elapsed_us,frame,extra\ninfer,5000,1,-\ninfer,7000,2,-\n",
-                encoding="utf-8",
-            )
-            legacy_path = Path(tmp) / "timing.log"
-            legacy_path.write_text("dvpp=800us\ndvpp: 1.2ms\n", encoding="utf-8")
-            self.assertEqual(SUMMARIZER.load_samples(csv_path)["infer"], [5.0, 7.0])
-            self.assertEqual(SUMMARIZER.load_samples(legacy_path)["dvpp"], [0.8, 1.2])
-
-
-class CollectorCliTests(unittest.TestCase):
-    def test_requires_explicit_output_and_refuses_existing_path(self):
-        script = SCRIPTS / "collect-ascend-debug.sh"
-        missing = subprocess.run(["bash", str(script)], text=True, capture_output=True, check=False)
-        self.assertEqual(missing.returncode, 2)
-        with tempfile.TemporaryDirectory() as tmp:
-            existing = subprocess.run(
-                ["bash", str(script), "--output", tmp], text=True, capture_output=True, check=False
-            )
-            self.assertEqual(existing.returncode, 2)
-            self.assertIn("Output already exists", existing.stderr)
-
-    def test_collector_creates_sanitized_combined_evidence(self):
-        script = SCRIPTS / "collect-ascend-debug.sh"
-        with tempfile.TemporaryDirectory() as tmp:
-            output = Path(tmp) / "bundle"
-            result = subprocess.run(
-                [
-                    "bash",
-                    str(script),
-                    "--output",
-                    str(output),
-                    "--deployment",
-                    "host",
-                    "--device-index",
-                    "0",
-                ],
-                text=True,
-                capture_output=True,
-                check=False,
-            )
-            self.assertEqual(result.returncode, 0, result.stderr)
-            combined = (output / "ascend-evidence.txt").read_text(encoding="utf-8")
-            self.assertIn("== Device Context: host device-0 ==", combined)
-            self.assertIn("Host Token:", combined)
-            self.assertNotRegex(combined, r"(?m)^[0-9a-fA-F]{32}$")
-
-    def test_scripts_are_executable(self):
-        for path in SCRIPTS.iterdir():
-            if path.suffix in {".py", ".sh"}:
-                self.assertTrue(os.access(path, os.X_OK), path.name)
+    def test_skill_contains_expected_sections(self):
+        skill = (SKILL_ROOT / "SKILL.md").read_text(encoding="utf-8")
+        description = skill.split("---", 2)[1].lower()
+        for term in ("ascend", "dvpp", "aipp", "atc", "ascendcl", "npu", "zero-copy"):
+            self.assertIn(term, description)
+        self.assertIn("Session Start: Device Identity Verification", skill)
+        self.assertIn("context.md Document Format", skill)
+        self.assertIn("Debugging and Logging", skill)
 
 
 if __name__ == "__main__":

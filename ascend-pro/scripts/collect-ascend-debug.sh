@@ -80,15 +80,25 @@ fi
   printf '%s\n' "Review every file and remove project-sensitive values before sharing."
 } >"$output_dir/00-context.txt"
 
-capture 10-system uname -a
-capture 11-os-release sh -c 'cat /etc/os-release 2>/dev/null || true'
-capture 20-npu-info npu-smi info
-capture 21-npu-board sh -c 'npu-smi info -t board -i "$1" 2>/dev/null || npu-smi info -t board 2>/dev/null' sh "$device_index"
-capture 22-npu-chip sh -c 'npu-smi info -t chip -i "$1" 2>/dev/null || npu-smi info -t chip 2>/dev/null' sh "$device_index"
-capture 23-device-nodes sh -c 'ls -l /dev/davinci* /dev/davinci_manager /dev/devmm_svm /dev/hisi_hdc 2>/dev/null || true'
-capture 30-cann-environment sh -c 'printf "ASCEND_HOME_PATH=%s\n" "${ASCEND_HOME_PATH:-}"; printf "ASCEND_HOME_REALPATH=%s\n" "$(readlink -f "${ASCEND_HOME_PATH:-}" 2>/dev/null || true)"; printf "ASCEND_TOOLKIT_HOME=%s\n" "${ASCEND_TOOLKIT_HOME:-}"; printf "ASCEND_TOOLKIT_REALPATH=%s\n" "$(readlink -f "${ASCEND_TOOLKIT_HOME:-}" 2>/dev/null || true)"; printf "ASCEND_AICPU_PATH=%s\n" "${ASCEND_AICPU_PATH:-}"'
-capture 31-tools sh -c 'for tool in npu-smi atc aclprof msprof msame ais_bench; do command -v "$tool" 2>/dev/null || true; done'
-capture 32-atc-version atc --version
+capture cann_env sh -lc 'printf "ASCEND_HOME_PATH=%s\n" "${ASCEND_HOME_PATH:-}"; printf "ASCEND_TOOLKIT_HOME=%s\n" "${ASCEND_TOOLKIT_HOME:-}"; printf "ASCEND_AICPU_PATH=%s\n" "${ASCEND_AICPU_PATH:-}"; printf "LD_LIBRARY_PATH=%s\n" "${LD_LIBRARY_PATH:-}"'
+capture ascend_tools sh -lc 'for tool in npu-smi atc aoe aclprof msprof msame ais_bench ais_infer; do command -v "$tool" 2>/dev/null || true; done'
+capture atc_version atc --version
+capture library_scan sh -lc "find /usr/local/Ascend /usr /usr/local -maxdepth 6 \\( -name 'libascendcl.so*' -o -name 'libacl_dvpp.so*' -o -name 'libacl_op_compiler.so*' -o -name 'libge_runner.so*' -o -name 'libascend_hal.so*' -o -name 'libhi_mpi_vpc.so*' -o -name 'libacl_tdt_channel.so*' \\) 2>/dev/null"
+capture header_scan sh -lc "find /usr/local/Ascend /usr /usr/local -maxdepth 6 \\( -name 'acl.h' -o -name 'acl_dvpp.h' -o -name 'acl_rt.h' -o -name 'acl_mdl.h' \\) 2>/dev/null"
+capture python_acl sh -lc 'python3 - <<PY
+try:
+    import acl
+    print("python acl module: present")
+    print(getattr(acl, "__file__", "unknown path"))
+except Exception as exc:
+    print("python acl module: not importable")
+    print(type(exc).__name__ + ": " + str(exc))
+try:
+    import torch_npu
+    print("torch_npu module: present", getattr(torch_npu, "__version__", "unknown"))
+except Exception:
+    print("torch_npu module: not importable")
+PY'
 
 search_roots=()
 for root in "${ASCEND_HOME_PATH:-}" "${ASCEND_TOOLKIT_HOME:-}" /usr/local/Ascend /opt/Ascend; do

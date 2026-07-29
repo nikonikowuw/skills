@@ -22,6 +22,30 @@ COLLECTED_PATTERN = re.compile(r"(?im)^Collected UTC:\s*([^\n]+)")
 CONTEXT_HEADER_PATTERN = re.compile(
     r"^==\s*Device Context:\s*(?P<label>.+?)\s*==\s*$", re.IGNORECASE | re.MULTILINE
 )
+
+LIB_PATTERNS = {
+    "libascendcl": re.compile(r"(?P<path>/[^\s]*libascendcl\.so[^\s]*)"),
+    "libacl_dvpp": re.compile(r"(?P<path>/[^\s]*libacl_dvpp\.so[^\s]*)"),
+    "libacl_op_compiler": re.compile(r"(?P<path>/[^\s]*libacl_op_compiler\.so[^\s]*)"),
+    "libge_runner": re.compile(r"(?P<path>/[^\s]*libge_runner\.so[^\s]*)"),
+    "libascend_hal": re.compile(r"(?P<path>/[^\s]*libascend_hal\.so[^\s]*)"),
+    "libhi_mpi_vpc": re.compile(r"(?P<path>/[^\s]*libhi_mpi_vpc\.so[^\s]*)"),
+}
+
+SYMBOL_GROUPS = {
+    "runtime": ("aclInit", "aclFinalize", "aclrtSetDevice", "aclrtSetDeviceWithoutContext", "aclrtCreateContext", "aclrtCreateStream"),
+    "memory": ("aclrtMalloc", "aclrtMallocAlign32", "aclrtFree", "aclrtMemcpy", "aclrtMemcpyAsync"),
+    "model": ("aclmdlLoadFromFile", "aclmdlExecute", "aclmdlExecuteAsync", "aclmdlCreateDataset", "aclnnMatMul"),
+    "dvpp": ("acldvppCreateChannel", "acldvppJpegDecodeAsync", "acldvppVpcResizeAsync", "acldvppVpcCropAndPasteAsync", "hi_mpi_vpc_resize"),
+}
+
+NODE_PATTERN = re.compile(r"/dev/(?:davinci\d+|davinci_manager|devmm_svm|hisi_hdc)")
+HEADER_PATTERN = re.compile(r"(?:(?:-I)|include_directories\(|target_include_directories\()[^)\\\n]*", re.IGNORECASE)
+LIBROOT_PATTERN = re.compile(r"(?:(?:-L)|link_directories\(|target_link_directories\()[^)\\\n]*", re.IGNORECASE)
+SDK_PATH_PATTERN = re.compile(r"(/[^\s'\"()]*?(?:Ascend|ascend|CANN|cann|acl|ACL)[^\s'\"()]*)")
+DL_PATTERN = re.compile(r"\bdlopen\b|RTLD_", re.IGNORECASE)
+OS_RELEASE_PATTERN = re.compile(r'PRETTY_NAME="?([^"\n]+)"?')
+KERNEL_PATTERN = re.compile(r"^Linux\s+.+", re.MULTILINE)
 DEVICE_PATTERN = re.compile(
     r"(?<![A-Za-z0-9_-])(Ascend\s*\d+[A-Za-z0-9]*|Atlas\s*200I(?:\s|-)?A2|"
     r"Atlas\s*(?:300|500|800|900|A\d+)[A-Za-z0-9_-]*)(?![A-Za-z0-9_-])",

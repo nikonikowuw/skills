@@ -79,12 +79,30 @@ manager, framework, or another component may own initialization, device selectio
 - Confirm runtime shapes and AIPP output match the OM's conversion-time contract.
 - Validate accuracy for every shape/profile used in production.
 
+## AscendCL NN (aclnn) Single-Operator Execution (CANN 7.0+)
+
+For CANN 7.0+ and 8.0, AscendCL provides high-performance C APIs (`aclnn*`) for executing individual operators directly without compiling an offline `.om` model.
+
+| API | Operation | Description |
+| --- | --- | --- |
+| `aclnnMatMul` | Matrix Multiplication | Executes BLAS GEMM directly on NPU AI Cores |
+| `aclnnConv2d` | 2D Convolution | High-performance convolution operator |
+| `aclnnAdd` | Elementwise Addition | Vector addition on NPU Vector Cores |
+
+### Calling Pattern for `aclnn*` Operators
+
+1. Create tensor descriptors: `aclCreateTensor`
+2. Query workspace size: `aclnnMatMulGetWorkspaceSize(..., &workspaceSize, &executor)`
+3. Allocate workspace memory: `aclrtMalloc(&workspace, workspaceSize, ...)`
+4. Launch async operator: `aclnnMatMul(workspace, workspaceSize, executor, stream)`
+5. Synchronize stream: `aclrtSynchronizeStream(stream)`
+
 ## Error Handling
 
 Classify each API by return convention before writing wrappers:
 
 | Convention | Check | Typical cleanup action |
-|---|---|---|
+| --- | --- | --- |
 | `aclError` return | compare with `ACL_SUCCESS` | unwind resources acquired by the current scope |
 | Pointer factory | check `nullptr` | destroy previously created wrappers/allocations |
 | Direct value/query | use documented invalid/sentinel contract | propagate a typed project error |

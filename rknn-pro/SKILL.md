@@ -1,24 +1,22 @@
 ---
 name: rknn-pro
 description: >
-  Load for Rockchip Linux tasks that involve RKNN,
-  RKNN-Toolkit2, RKNN Runtime, an .rknn artifact, or NPU inference, including
-  adjacent RGA, MPP, DMA-BUF, conversion, stride, zero-copy, scheduling,
-  compatibility, crashes, safety, and performance work on RK3568/RK3576/RK3588.
-  RKNN-containing tasks belong here. Do not load for Rockchip media-only work
-  without RKNN; use rockchip-performance. Do not load for Ascend/ACL,
-  TensorRT/CUDA, OpenVINO, or generic non-Rockchip DMA-BUF.
+  Load when the user asks to build, diagnose, review, or optimize Linux inference and media pipelines that use Rockchip RKNN, RKNN-Toolkit2, RKNN Runtime/RKNPU2, RGA/librga, MPP, DMA-BUF, or RK3568/RK3576/RK3588-class SoCs. Use this skill whenever a task mentions RKNN model conversion or quantization, Rockchip NPU operators, tensor stride or alignment, zero-copy camera/video pipelines, multi-model scheduling, runtime/BSP compatibility, high CPU or latency, memory corruption, service crashes, or kernel-facing safety, even when the user does not explicitly ask for an RKNN expert. Do NOT use this skill for frontend changes, web backend development, or non-Rockchip AI tasks.
 ---
 
 # rknn-pro
 
 Build or tune Rockchip inference and media pipelines on RK3568, RK3576, and RK3588 Linux systems.
 
+## Always Read
+- If `.agents/context/rknn-context/` exists in the target project, read the active machine's `.md` file to load board-specific context BEFORE starting diagnosis or design.
+- If `.agents/rknn-model-context.md` exists, read it BEFORE making decisions about tensor layouts or normalization.
+
 ## Workflow
 
 1. Classify the task before collecting evidence. Source-only review, conversion planning, and API explanation can start without board access; mark board-dependent conclusions as unverified.
-2. Record the Model Conversion Evidence Gate as `passed`, `blocked`, or `not-applicable`. It applies only to decisions that depend on the RKNN artifact's model contract. A blocked model-dependent decision must not stop model-independent API, source-safety, ownership, queueing, or device-evidence work.
-3. When ABI, allocator, driver, compatibility, or performance facts matter, select one device context. Run the bundled diagnostic on that board and render `.agents/rknn-context.md` in the target project.
+2. Before developing or approving model input, preprocessing, zero-copy tensor layout, quantization-sensitive postprocessing, or deployment configuration, pass the Model Conversion Evidence Gate below. Keep model provenance separate from device provenance.
+3. When ABI, allocator, driver, compatibility, or performance facts matter, select one device context. Run the bundled diagnostic on that board and render `.agents/context/rknn-context/{machine_id}.md` in the target project.
 4. Read only the references needed for the active task:
    - Model conversion or quantization: [model-conversion.md](references/model-conversion.md), then [npu-op-compatibility.md](references/npu-op-compatibility.md) for operator or precision issues.
    - YOLO detection model deployment: [yolo-deployment-cookbook.md](references/yolo-deployment-cookbook.md).
@@ -69,11 +67,12 @@ When the gate is `blocked`, make the boundary explicit in the response. Report:
 4. Decisions blocked by those unknowns and the evidence needed to unblock them.
 5. Work that may continue now because its correctness does not depend on the missing model facts.
 
-## Initialization Checklist (`.agents/rknn-context.md`)
+## Initialization Checklist (`.agents/context/rknn-context/{machine_id}.md`)
 
 When board-specific facts matter or fingerprint mismatches:
 - [ ] Run `<skill-root>/scripts/rknn-diag.sh` on device (or use the checklist in [device-baseline-workflow.md](references/device-baseline-workflow.md)).
-- [ ] Build baseline from the target project: `python3 <skill-root>/scripts/render-project-baseline.py pasted-evidence.txt -o .agents/rknn-context.md`.
+- [ ] Build baseline from the target project: `python3 <skill-root>/scripts/render-project-baseline.py pasted-evidence.txt --write-default`.
+- [ ] The `--write-default` flag auto-detects `machine_id` and writes to `.agents/context/rknn-context/{machine_id}.md`. Use `--context-id <label>` to override the auto-detected ID.
 - [ ] Set context ID: `{device_id_or_label}-{soc}-{environment_fingerprint}-{purpose}`. Maintain separate blocks per board/BSP.
 - [ ] Review parser output against the raw evidence. A generated baseline is a draft, not proof.
 
@@ -95,6 +94,8 @@ When board-specific facts matter or fingerprint mismatches:
 - [ ] RGA dimensions, strides, and ROI coordinates validated for the selected core, format, and read mode?
 - [ ] RGA destination matches NPU queried `w_stride` / `h_stride`?
 - [ ] Math overflow / out-of-bounds proven impossible for strides/ROI?
+- [ ] **RGA DMA-BUF lifecycle — `importbuffer_fd` once per pool, not per-frame `wrapbuffer_fd`?** (see [known-crash-patterns.md](references/known-crash-patterns.md) — RGA cascade)
+- [ ] **RGA core load balancing — `im_set_core_mask()` set to use all available RGA cores?** (default single-core affinity is a common amplifier)
 - [ ] Resource acquisition (fd/mmap) paired with release across all paths?
 - [ ] Queue limits enforced? Cache sync / fences ordered correctly?
 - [ ] NPU cores assigned and memory budgeted for multi-model?

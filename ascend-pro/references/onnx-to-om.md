@@ -120,11 +120,168 @@ not only final application results. Archive the config with the OM because it ch
 
 ## Deployment Gate
 
-- [ ] Framework and ONNX outputs match on representative and boundary inputs.
-- [ ] Target SoC and installed ATC/CANN versions are recorded.
-- [ ] Every ATC option exists in selected-version help/docs and has a stated reason.
-- [ ] Conversion exit status, full log, and artifact checksum are retained.
-- [ ] OM runtime I/O metadata matches application binding and preprocessing.
-- [ ] OM accuracy passes against reference outputs for every deployed profile.
-- [ ] Runtime load/execution succeeds in the reviewed device context.
-- [ ] End-to-end performance is measured with product-equivalent preprocessing, copies, and postprocessing.
+**Ops missing from ONNX:**
+
+- Some TF ops (e.g., `ExtractImagePatches` with certain params) may not map.
+- Run with `--verbose` to see which ops are unsupported.
+
+**Verification:**
+
+```bash
+python -m tf2onnx.convert --saved-model ./saved_model --output model.onnx --opset 13
+python -c "import onnx; onnx.checker.check_model('model.onnx'); print('OK')"
+```
+
+---
+
+## 3. ONNX → OM (ATC)
+
+### Basic command
+
+```bash
+atc --model=model.onnx --framework=5 --output=model.om --soc_version=Ascend310B4
+```
+
+> 💡 **Supported `soc_version` examples (CANN 7.0 / 8.0)**:
+>
+> - Edge/Embedded: `Ascend310B1`, `Ascend310B4`, `Ascend310P1`, `Ascend310P3`, `Ascend310P4`
+> - Server/Training: `Ascend910B1`, `Ascend910B2`, `Ascend910B3`, `Ascend910B4`
+
+## Critical Parameters
+
+| Parameter | Values | Description |
+| --- | --- | --- |
+| `--soc_version` | Ascend310B1/B4, Ascend310P1/3/4, Ascend910B1-B4 | **Must** match target device. Check via `npu-smi info` or `version.conf`. |
+| `--precision_mode` | `force_fp16`, `force_fp8` (CANN 8.0+ Ascend910B3/B4), `allow_fp32_to_fp16`, `must_keep_origin_dtype`, `allow_mix_precision` | Controls operator precision. `allow_mix_precision` gives best perf/accuracy trade-off. |
+| `--op_select_implmode` | `high_precision`, `high_performance` | `high_precision` resolves accuracy degradation; `high_performance` maximizes throughput. |
+| `--enable_compress_weight` | `true`, `false` | Enables weight compression to reduce OM model size on memory-constrained devices. |
+| `--buffer_optimize` | `off_optimize`, `l1_optimize`, `l2_optimize` | Memory buffer reuse optimization for Graph Engine during offline model generation. |
+| `--input_shape` | e.g., `data:1,3,224,224` | Override input shapes (required for dynamic-shaped ONNX models). |
+| `--dynamic_batch_size` | e.g., `1,2,4,8` | Enables dynamic batch at runtime. Cannot use with `--input_shape` for the same input. |
+| `--dynamic_image_size` | e.g., `224,224;512,512` | Enables dynamic resolution at runtime. |
+| `--insert_op_conf` | path to AIPP config | Attach AIPP preprocessing configuration (supports `.cfg` or CANN 8.0 `.yaml`). |
+| `--output_type` | FP32, FP16, UINT8, etc. | Force output data type. |
+| `--log` | `debug`, `info`, `warning`, `error` | Debug level — use `debug` to see which operators fail. |
+| `--out_nodes` | e.g., `output:0` | Specify output node names (when model has multiple outputs). |
+
+---
+
+## 4. AOE Auto-Tuning (Ascend Optimization Engine)
+
+CANN provides **AOE (Ascend Optimization Engine)** to automatically tune operators and subgraphs for target Ascend NPUs after initial ONNX conversion.
+
+### Running AOE
+
+```bash
+aoe --framework=5 --model=model.onnx --output=model_tuned.om \
+    --soc_version=Ascend310B4 \
+    --job_type=1 \
+    --aoe_mode=subgraph,operator
+```
+
+### AOE Job Types & Modes
+
+| Parameter | Options | Purpose |
+| --- | --- | --- |
+| `--job_type` | `1` (subgraph), `2` (operator) | `1` tunes subgraph fusion passes; `2` tunes GEMM/Conv operator tile policies. |
+| `--aoe_mode` | `subgraph`, `operator`, `block` | Multi-stage auto-tuning mode for CANN 8.0+. Combine modes with commas. |
+
+> 💡 **Best Practice**: Run baseline ATC conversion first to produce `model.om`. If throughput or latency needs further optimization, run AOE tuning to produce `model_tuned.om` and measure the performance gain with `summarize-stage-latency.py`.
+
+## Dynamic Shape Strategies
+
+### Dynamic batch (`--dynamic_batch_size`)
+
+```
+--dynamic_batch_size=1,2,4,8 --input_shape="data:-1,3,224,224"
+```
+
+- ATC generates optimization profiles for each batch size
+- At runtime, use `aclmdlSetDynamicBatchSize` before each inference
+- Batch-1 and batch-8 may have different throughput characteristics
+
+### Dynamic image size (`--dynamic_image_size`)
+
+```
+--dynamic_image_size="224,224;512,512"
+--input_shape="data:1,3,-1,-1"
+```
+
+- Each HW pair generates an optimization profile
+- At runtime, use `aclmdlSetDynamicHWSize` before inference
+- Cannot use `Crop`/`Padding` AIPP features in this mode
+
+### Dynamic shape (ND format)
+
+```
+--input_shape="data:1,3,-1,-1"  --dynamic_dims="224,224;512,512"
+```
+
+- Use `aclmdlSetInputShape` at runtime
+- Most flexible but may have lower performance than profile-based approaches
+
+## Precision Optimization Guide
+
+### When accuracy drops after conversion
+
+1. Try `--precision_mode=allow_mix_precision` first
+2. If still degraded: `--precision_mode=must_keep_origin_dtype`
+3. If specific ops are problematic: `--op_select_implmode=high_precision`
+4. Use `--precision_mode=allow_fp32_to_fp16` for a balance
+
+### When throughput is critical
+
+1. `--precision_mode=force_fp16` (fastest, may lose accuracy)
+2. `--op_select_implmode=high_performance`
+3. Combine with `--enable_scope_fusion_passes` for aggressive fusion
+
+## Conversion Debugging
+
+### ATC fails with operator error
+
+```bash
+atc --model=model.onnx --framework=5 --output=model.om --soc_version=Ascend310P3 --log=debug 2>&1 | grep -i "fail\|unsupported\|error"
+```
+
+Common operator issues:
+
+- Custom ONNX ops not registered → write a custom operator plugin
+- Operator not supported on target SOC → check operator list in CANN documentation
+- Dynamic shape constraints → flatten or fix input shape specification
+
+### ATC succeeds but OM fails at runtime
+
+```bash
+# Check CANN version compatibility
+cat /usr/local/Ascend/version.cfg
+# Compare with ATC version used for conversion
+
+# Load the OM with debug logging
+export ASCEND_SLOG_PRINT_TO_STDOUT=1
+export ASCEND_GLOBAL_LOG_LEVEL=1
+```
+
+Root causes:
+
+1. CANN version mismatch between conversion environment and deployment device
+2. `--soc_version` does not match actual deployment hardware
+3. OM was built for different memory constraints
+
+## AIPP + Conversion Interaction
+
+- **Static AIPP**: parameters frozen at conversion; simpler, no runtime overhead
+- **Dynamic AIPP**: parameters set via `aclmdlSetInputAIPP` at runtime; ATC adds `AippData` input
+- Dynamic batch `--dynamic_batch_size` + AIPP: `batchSize` param must equal max batch
+- Dynamic image size `--dynamic_image_size` + AIPP: `Crop`/`Padding` disabled at runtime
+- `--input_shape` + AIPP: AIPP output W/H must be within the shape range
+
+## Verification Checklist
+
+- [ ] `--soc_version` matches deployment device (check `npu-smi info`)
+- [ ] CANN version on conversion host and deployment device are compatible (within 4 minor versions)
+- [ ] Input shape(s) match runtime data
+- [ ] AIPP config (if used) matches runtime input format and layout
+- [ ] Dynamic shape policy (if used) is consistent between conversion and runtime code
+- [ ] Accuracy validated after conversion (compare NPU output vs CPU/GPU reference)
+- [ ] Throughput measured after conversion (not just single-inference latency)
+- [ ] `atc --debug` shows no unsupported operator fallbacks

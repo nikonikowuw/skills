@@ -1,0 +1,90 @@
+[
+  {
+    "query": "Our Atlas 200 DK DVPP decode pipeline is crashing with aclError on ascend310; diagnose the buffer alignment.",
+    "should_trigger": true
+  },
+  {
+    "query": "Convert this YOLOv8 ONNX model to OM for Ascend310P3 using ATC with FP16 precision.",
+    "should_trigger": true
+  },
+  {
+    "query": "An Ascend 310 application using DVPP and ACL crashes when an FP32 tensor is copied to device memory.",
+    "should_trigger": true
+  },
+  {
+    "query": "Run the device evidence collection script on our Atlas 500 host and render the project baseline.",
+    "should_trigger": true
+  },
+  {
+    "query": "Our AscendCL inference pipeline copies DVPP output to CPU then back to NPU; eliminate the redundant copy.",
+    "should_trigger": true
+  },
+  {
+    "query": "Design the AIPP config for our NV12-to-BGR model with mean_chn=128 and crop_w=640.",
+    "should_trigger": true
+  },
+  {
+    "query": "Check CANN version compatibility between our ATC-built OM and the runtime on Atlas 800.",
+    "should_trigger": true
+  },
+  {
+    "query": "Our multi-context baseline file mixes libascendcl from Ascend310P and Atlas200I A2; identify the risk.",
+    "should_trigger": true
+  },
+  {
+    "query": "Validate the memory alignment for acldvppJpegDecodeAsync output buffer on a 1920x1080 input.",
+    "should_trigger": true
+  },
+  {
+    "query": "Set up spdlog debug logging with dual loggers for our new Ascend inference service.",
+    "should_trigger": true
+  },
+  {
+    "query": "Our ATC conversion fails with 'E19999: Inner Error' on this ONNX model; extract the log and diagnose.",
+    "should_trigger": true
+  },
+  {
+    "query": "Calculate the stride and buffer size for an AscendCL model input tensor with width 1280 and height 720.",
+    "should_trigger": true
+  },
+  {
+    "query": "My CUDA TensorRT engine has a dynamic-shape binding error and an illegal memory access.",
+    "should_trigger": false
+  },
+  {
+    "query": "Convert an ONNX model to OpenVINO INT8 for an Intel NPU.",
+    "should_trigger": false
+  },
+  {
+    "query": "My Raspberry Pi service uses libcamera and OpenCV; reduce memcpy and CPU usage.",
+    "should_trigger": false
+  },
+  {
+    "query": "Explain Linux DMA-BUF synchronization between a generic DRM driver and a V4L2 camera.",
+    "should_trigger": false
+  },
+  {
+    "query": "Our RK3588 RKNN model crashes in rknn_run; debug the NPU kernel.",
+    "should_trigger": false
+  },
+  {
+    "query": "Analyze an Android Java camera application that does not use any NPU hardware.",
+    "should_trigger": false
+  },
+  {
+    "query": "Optimize a PyTorch model's FP32 training loop on an NVIDIA GPU before ONNX export.",
+    "should_trigger": false
+  },
+  {
+    "query": "Can you debug an RK4 Runge-Kutta implementation that produces NaNs?",
+    "should_trigger": false
+  },
+  {
+    "query": "Audit a generic GStreamer pipeline for latency without specifying hardware accelerators.",
+    "should_trigger": false
+  },
+  {
+    "query": "Write a Terraform module for deploying EC2 instances in AWS.",
+    "should_trigger": false
+  }
+]

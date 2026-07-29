@@ -8,9 +8,9 @@ Use this reference to scope Ascend performance work before making platform claim
 
 This skill is centered on Linux inference and media pipelines using Huawei Ascend software surfaces:
 
-- Atlas edge and embedded inference devices, commonly built around Ascend 310, 310B, or 310P class processors.
-- Atlas server inference devices where CANN and AscendCL are the runtime surface.
-- Ascend 910 or 910B systems when the task is runtime inference, profiling, model deployment, or CANN compatibility. Training and distributed HCCL tuning are outside the default path unless explicitly requested.
+- Atlas edge and embedded inference devices, commonly built around Ascend 310, 310B (310B1/B4), or 310P (310P1/3/4) class processors.
+- Atlas server inference and training devices (Ascend 910B1/B2/B3/B4) where CANN and AscendCL / torch_npu are the runtime surface.
+- Ascend 910 or 910B systems when the task is runtime inference, profiling, model deployment, or CANN compatibility. Training and distributed HCCL tuning are supported via torch_npu and MindIE.
 
 Always confirm the actual device model with `npu-smi info`, package metadata, deployment docs, or vendor image notes. Do not infer capabilities from the product family name alone.
 
@@ -25,7 +25,8 @@ Record which of these are actually present:
 - DVPP media processing libraries and headers.
 - AIPP model preprocess configuration, either embedded during conversion or configured through model artifacts.
 - Python packages such as `acl`, `ais_bench`, model conversion dependencies, or framework adapters.
-- Profiling tools such as `aclprof` or msprof-based tooling, depending on the installed CANN release.
+- Profiling tools such as `aclprof`, `msprof` (`msprof --mode=online` in CANN 8.0), `ais_bench --profiler`, or PyTorch `torch_npu.npu.profiler`.
+- Optimization tools such as `aoe` (Ascend Optimization Engine) and ATB (Ascend Transformer Boost).
 
 ## Common Project Shapes
 
