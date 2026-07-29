@@ -1,62 +1,32 @@
 # First Response Template
 
-## Purpose
+Use this only when the selected task requires Evidence Gate 1 or 2 and the needed facts cannot be obtained
+from the repository or target environment. Do not use it for explanations, meta-work, or source-only review.
 
-Use this template when a user asks for Ascend development or optimization help but the device evidence has not been collected yet.
-
-## Agent Behavior
-
-The first response should:
-
-1. State that implementation should wait until the device baseline is collected.
-2. Give the user a concrete command checklist.
-3. Tell the user exactly what to paste back.
-4. Promise to turn that evidence into a project baseline for subsequent development.
-
-## Suggested Response Shape
-
-Use wording close to this:
+Adapt the request to the task. Ask for the smallest evidence set that can support the next decision:
 
 ```text
-Before changing code, I need the target Ascend device and runtime baseline. On Ascend work, the device model, driver, firmware, CANN, headers, runtime libraries, container mounts, and OM artifacts must line up; coding first is risky.
+This change depends on the selected Ascend runtime. I can continue with version-independent work now, but
+before choosing device-specific APIs or claiming compatibility I need: <exact missing facts>.
 
-Please run these on the target device, and if the app runs in a container, run the library and environment checks both on the host and inside the container. If you have multiple Ascend or Atlas device models, paste one labeled block per device, for example `== Device Context: Ascend310P host ==`.
+Please run the ascend-pro sanitized collector on the target runtime:
 
-1. Device identity and OS
-   cat /etc/machine-id                   # device context key
-   uname -a
-   cat /etc/os-release
-   npu-smi info
-   npu-smi info -t board -i 0 2>/dev/null || npu-smi info -t board 2>/dev/null || true
-   npu-smi info -t chip -i 0 2>/dev/null || npu-smi info -t chip 2>/dev/null || true
+  bash scripts/collect-ascend-debug.sh \
+    --output ascend-evidence \
+    --deployment <host-or-container> \
+    --device-index <index> \
+    --target-binary <application-or-so>
 
-2. Device nodes and permissions
-   ls -l /dev/davinci* /dev/davinci_manager /dev/devmm_svm /dev/hisi_hdc 2>/dev/null
-   groups
-
-3. CANN tools and environment
-   which npu-smi atc aclprof msame ais_bench 2>/dev/null
-   atc --version 2>/dev/null || true
-   printf 'ASCEND_HOME_PATH=%s\n' "${ASCEND_HOME_PATH:-}"
-   printf 'ASCEND_TOOLKIT_HOME=%s\n' "${ASCEND_TOOLKIT_HOME:-}"
-
-4. Ascend libraries
-   find /usr/local/Ascend /usr /usr/local -maxdepth 6 \( -name 'libascendcl.so*' -o -name 'libacl_dvpp.so*' -o -name 'libacl_op_compiler.so*' -o -name 'libge_runner.so*' \) 2>/dev/null
-
-5. Target binary linkage
-   ldd <target-binary-or-so>
-   readelf -d <target-binary-or-so>
-
-6. Exported symbols
-   nm -D <ascend-shared-object> | grep -E 'aclInit|aclFinalize|aclrt|aclmdl|acldvpp'
-   readelf -Ws <ascend-shared-object> | grep -E 'aclInit|aclFinalize|aclrt|aclmdl|acldvpp'
-
-7. Build-system and model clues from the project root
-   rg -n 'ascend|CANN|ASCEND|aclrt|aclmdl|acldvpp|dvpp|aipp|atc|\\.om|LD_LIBRARY_PATH|find_library|target_link_libraries|include_directories|dlopen' .
-
-After you paste that, I will turn it into a compact device-scoped project baseline, select the active device context with you, and use only that context as the development standard for code changes.
+Inspect every generated file before sharing it. The collector omits common high-risk diagnostics and
+redacts common identifiers, but automated redaction is not a confidentiality guarantee. Do not paste raw
+/etc/machine-id, raw board serials, credentials, full environment output, or full container metadata.
+After inspection, `ascend-evidence/ascend-evidence.txt` is the combined renderer input.
 ```
 
-## Reference
+For ATC-only work, request only target SoC, installed `atc --version`, model input contract, and the exact
+conversion command/log. For DVPP, add formats, dimensions, actual strides, and device/CANN version. For
+performance work, add a reproducible workload and stage timings.
 
-For the full command set and fallback instructions, use [device-command-checklist.md](device-command-checklist.md). After generating a baseline draft, review it with [baseline-review-checklist.md](baseline-review-checklist.md). Store the reviewed version as `.agent/ascend-pro/context/{machine_id}.md` (see [baseline-file-convention.md](baseline-file-convention.md) and the [context.md format](../SKILL.md#contextmd-document-format)).
+Use [device-command-checklist.md](device-command-checklist.md) when the helper cannot be run. Render the
+sanitized evidence as a generated draft, review it, and deliberately create a reviewed context following
+[baseline-file-convention.md](baseline-file-convention.md).

@@ -1,279 +1,130 @@
-# Model Conversion Guide (Framework → ONNX → OM)
+# Framework To ONNX To OM Workflow
 
-Full model conversion pipeline for Ascend devices: from PyTorch or TensorFlow to ONNX, then ONNX to deployable `.om` offline model via ATC.
+Conversion is two separately validated boundaries:
 
----
-
-## 1. PyTorch → ONNX
-
-### Basic export
-
-```python
-import torch
-
-model = torch.load("model.pt")  # or torch.jit.load for TorchScript
-model.eval()
-
-# Create dummy input matching the model's input shape
-dummy_input = torch.randn(1, 3, 224, 224)
-
-# Export to ONNX
-torch.onnx.export(
-    model,
-    dummy_input,
-    "model.onnx",
-    opset_version=11,          # Ascend supports opset 11+; prefer 13 or 15
-    input_names=["input"],
-    output_names=["output"],
-    dynamic_axes={
-        "input": {0: "batch_size", 2: "height", 3: "width"},
-        "output": {0: "batch_size"}
-    }  # omit for static shapes
-)
+```text
+framework artifact -> ONNX -> OM for one target SoC/toolchain
 ```
 
-### Key `torch.onnx.export` parameters
+Do not tune ATC before proving the ONNX model matches the framework, and do not treat ATC success as proof
+that the OM is accurate, compatible, or performant.
 
-| Parameter | Description | Ascend Recommendation |
-|---|---|---|
-| `opset_version` | ONNX opset version | 11–15; 13 is a safe default |
-| `dynamic_axes` | Dict of dynamic dimensions | Use for variable batch/resolution models |
-| `input_names` / `output_names` | Named I/O tensors | Match names used in ATC `--input_shape` / `--out_nodes` |
-| `do_constant_folding` | Fold constant ops | `True` (default) reduces graph size |
-| `export_params` | Include model weights | `True` (default) |
+## Conversion Record
 
-### Common PyTorch→ONNX issues
+Create a record containing:
 
-**Dynamic control flow (if/for dependent on input):**
-- PyTorch's `torch.onnx.export` traces the graph with `dummy_input`.
-- If the model has data-dependent control flow, use `torch.jit.script()` first, then export.
+- source framework/version, model checksum, code revision, and model mode;
+- deterministic representative inputs and preprocessing contract;
+- input/output names, dtypes, layouts, shapes, dynamic axes, and acceptable tolerances;
+- exporter/runtime/ONNX versions and chosen opset with compatibility evidence;
+- target device/SoC, ATC version, exact command/log, and CANN compatibility source;
+- precision/operator/AIPP/dynamic-shape flags from that installed ATC version;
+- ONNX and OM checksums plus accuracy and performance results.
 
-**Operators not supported in ONNX:**
-- Common unsupported ops: `torch.einsum` (partial), advanced indexing with dynamic indices.
-- Workaround: rewrite using supported ops (e.g., `torch.matmul` + `torch.reshape`).
+No opset, precision mode, dynamic flag, or ATC option is a universal default. Select it from the installed
+exporter, target ATC operator support, and exact model requirements.
 
-**Export with dynamic batch but ATC expects static:**
-- Either keep `dynamic_axes` and use ATC's `--dynamic_batch_size`,
-- Or export with a fixed batch size and omit `dynamic_axes`.
+## Framework To ONNX
 
-**Verification:**
+1. Load the model through its normal repository code, set evaluation/inference mode, and freeze randomness.
+2. Build representative inputs from the real runtime contract, including optional inputs and boundary shapes.
+3. Query the exporter and target toolchain for supported opsets; choose the newest mutually supported opset
+   only after checking operator coverage.
+4. Export with explicit input/output names and intentional dynamic dimensions.
+5. Run the ONNX structural checker and shape inference where applicable.
+6. Execute the ONNX model in an independent reference runtime on the same inputs.
+7. Compare every relevant output against the framework model with dtype/model-appropriate tolerances.
+
+Example verification skeleton:
+
 ```python
+import numpy as np
 import onnx
+import onnxruntime as ort
+
 onnx_model = onnx.load("model.onnx")
 onnx.checker.check_model(onnx_model)
-print(onnx.helper.printable_graph(onnx_model.graph))
+
+session = ort.InferenceSession("model.onnx", providers=["CPUExecutionProvider"])
+onnx_outputs = session.run(None, representative_inputs)
+
+for expected, actual in zip(framework_outputs, onnx_outputs):
+    np.testing.assert_allclose(actual, expected, rtol=rtol, atol=atol)
 ```
 
-### Exporting from HuggingFace / transformers
+Adapt conversion code to the installed framework/exporter version. Exporter APIs and control-flow support
+change; do not paste a legacy PyTorch or tf2onnx snippet without checking its current signature.
 
-```python
-from transformers import AutoModel
-model = AutoModel.from_pretrained("bert-base-uncased")
-model.eval()
+## ONNX Failure Triage
 
-dummy_input = {
-    "input_ids": torch.randint(0, 30000, (1, 128)),
-    "attention_mask": torch.ones(1, 128, dtype=torch.long),
-}
+- Minimize the first mismatching output/subgraph rather than rewriting the entire model.
+- Distinguish exporter failure, invalid ONNX, unsupported reference-runtime operator, and numeric mismatch.
+- Preserve tensor names and intermediate comparison hooks while debugging.
+- Use graph simplification or constant folding only if before/after ONNX outputs remain equivalent.
+- Treat layout transposes, integer types, dynamic indexing, control flow, resize semantics, and NMS variants
+  as explicit compatibility risks.
 
-torch.onnx.export(
-    model,
-    tuple(dummy_input.values()),
-    "bert.onnx",
-    opset_version=13,
-    input_names=["input_ids", "attention_mask"],
-    output_names=["last_hidden_state"],
-    dynamic_axes={
-        "input_ids": {0: "batch", 1: "seq_len"},
-        "attention_mask": {0: "batch", 1: "seq_len"},
-    },
-)
-```
+## ONNX To OM
 
----
+1. Establish the target SoC and installed `atc --version`.
+2. Inspect `atc --help` and exact-version official documentation for supported flags and operator coverage.
+3. Start from the minimum command required by that version. Do not append `.om` to `--output` unless the
+   selected ATC documentation says the argument is a filename rather than an output prefix.
+4. Add input-shape, dynamic-shape, precision, output-node, or AIPP options one decision at a time.
+5. Capture the complete log with `pipefail` as described in [debug-logging.md](debug-logging.md).
+6. Fail the workflow if ATC exits nonzero even if a pipeline command such as `tee` succeeded.
+7. Hash the generated artifact and store it with the conversion record.
 
-## 2. TensorFlow → ONNX
-
-### Using tf2onnx
+Command shape, with placeholders intentionally left version-specific:
 
 ```bash
-pip install tf2onnx onnx
+set -o pipefail
+atc \
+  --model=model.onnx \
+  --framework=5 \
+  --output=model \
+  --soc_version=<verified-target> \
+  <verified-version-specific-options> \
+  2>&1 | tee atc-conversion.log
 ```
 
-**From SavedModel:**
-```bash
-python -m tf2onnx.convert \
-    --saved-model ./saved_model \
-    --output model.onnx \
-    --opset 13
-```
+## Dynamic Shapes
 
-**From frozen .pb (GraphDef):**
-```bash
-python -m tf2onnx.convert \
-    --input model.pb \
-    --inputs input:0 \
-    --outputs output:0 \
-    --output model.onnx \
-    --opset 13
-```
+Choose static, dynamic batch, dynamic image size, or general dynamic dimensions from workload evidence.
+Then verify, for the selected ATC/CANN version:
 
-**From Keras H5 / SavedModel:**
-```python
-import tf2onnx
-import tensorflow as tf
+- valid flag combinations and syntax;
+- generated model control inputs and runtime setter API;
+- supported profiles/ranges and buffer sizing behavior;
+- AIPP interaction;
+- runtime input binding and per-shape accuracy/performance.
 
-model = tf.keras.models.load_model("model.h5")
-spec = (tf.TensorSpec((None, 224, 224, 3), tf.float32, name="input"),)
-model.output_names = ["output"]
+Static shapes are the default when production uses a fixed contract. Dynamic flexibility has artifact size,
+compile-time, runtime, memory, and performance costs that must be measured rather than assumed.
 
-onnx_model, _ = tf2onnx.convert.from_keras(model, input_signature=spec, opset=13)
-onnx.save(onnx_model, "model.onnx")
-```
+## Precision Tuning
 
-### Key tf2onnx parameters
+1. Establish a known-good framework and ONNX output corpus.
+2. Generate an OM with the least aggressive supported conversion policy.
+3. Compare tensor/model outputs and task metrics.
+4. Use ATC diagnostics to identify the first precision-sensitive operator or subgraph.
+5. Change one exact-version precision/operator setting.
+6. Regenerate, revalidate accuracy, and measure the same workload.
 
-| Parameter | Description |
-|---|---|
-| `--opset` | ONNX opset version (11–15; 13 recommended for Ascend) |
-| `--inputs` / `--outputs` | Input/output tensor names (with `:0` port suffix) |
-| `--inputs-as-nchw` | Treat listed inputs as NCHW format |
-| `--fold_const` | Fold constant ops before export |
-| `--target` | Target device hints (e.g., `--target=ascend`) |
+Never describe a precision mode as “best” or “fastest” without measurements on the selected model/device.
 
-### TensorFlow → ONNX pitfalls
+## AIPP
 
-**NHWC vs NCHW:**
-- TensorFlow defaults to NHWC (batch, height, width, channels).
-- Ascend models commonly expect NCHW.
-- Use `--inputs-as-nchw` in tf2onnx OR transpose in preprocessing.
-- Alternatively, use AIPP `ax_swap_switch` to handle channel reorder.
+Follow [aipp-config-reference.md](aipp-config-reference.md). Compare tensor preprocessing and model outputs,
+not only final application results. Archive the config with the OM because it changes the runtime input contract.
 
-**TF control flow (tf.cond / tf.while_loop):**
-- tf2onnx has limited support; prefer to export without dynamic control flow.
-- Convert to TF2 static graph if possible (use `@tf.function(jit_compile=True)`).
+## Deployment Gate
 
-**Ops missing from ONNX:**
-- Some TF ops (e.g., `ExtractImagePatches` with certain params) may not map.
-- Run with `--verbose` to see which ops are unsupported.
-
-**Verification:**
-```bash
-python -m tf2onnx.convert --saved-model ./saved_model --output model.onnx --opset 13
-python -c "import onnx; onnx.checker.check_model('model.onnx'); print('OK')"
-```
-
----
-
-## 3. ONNX → OM (ATC)
-
-### Basic command
-
-```bash
-atc --model=model.onnx --framework=5 --output=model.om --soc_version=Ascend310P3
-```
-
-## Critical Parameters
-
-| Parameter | Values | Description |
-|---|---|---|
-| `--soc_version` | Ascend310P1/3, Ascend910B1, Ascend310B1, etc. | **Must** match target device. Check via `npu-smi info` or `/usr/local/Ascend/driver/version.conf`. |
-| `--precision_mode` | `force_fp16`, `allow_fp32_to_fp16`, `must_keep_origin_dtype`, `allow_mix_precision` | Controls operator precision. `allow_mix_precision` gives best perf/accuracy trade-off. |
-| `--op_select_implmode` | `high_precision`, `high_performance` | `high_precision` resolves accuracy degradation; `high_performance` maximizes throughput. |
-| `--input_shape` | e.g., `data:1,3,224,224` | Override input shapes (required for dynamic-shaped ONNX models). |
-| `--dynamic_batch_size` | e.g., `1,2,4,8` | Enables dynamic batch at runtime. Cannot use with `--input_shape` for the same input. |
-| `--dynamic_image_size` | e.g., `224,224;512,512` | Enables dynamic resolution at runtime. |
-| `--insert_op_conf` | path to AIPP config | Attach AIPP preprocessing configuration. |
-| `--output_type` | FP32, FP16, UINT8, etc. | Force output data type. |
-| `--log` | `debug`, `info`, `warning`, `error` | Debug level — use `debug` to see which operators fail. |
-| `--out_nodes` | e.g., `output:0` | Specify output node names (when model has multiple outputs). |
-
-## Dynamic Shape Strategies
-
-### Dynamic batch (`--dynamic_batch_size`)
-```
---dynamic_batch_size=1,2,4,8 --input_shape="data:-1,3,224,224"
-```
-- ATC generates optimization profiles for each batch size
-- At runtime, use `aclmdlSetDynamicBatchSize` before each inference
-- Batch-1 and batch-8 may have different throughput characteristics
-
-### Dynamic image size (`--dynamic_image_size`)
-```
---dynamic_image_size="224,224;512,512"
---input_shape="data:1,3,-1,-1"
-```
-- Each HW pair generates an optimization profile
-- At runtime, use `aclmdlSetDynamicHWSize` before inference
-- Cannot use `Crop`/`Padding` AIPP features in this mode
-
-### Dynamic shape (ND format)
-```
---input_shape="data:1,3,-1,-1"  --dynamic_dims="224,224;512,512"
-```
-- Use `aclmdlSetInputShape` at runtime
-- Most flexible but may have lower performance than profile-based approaches
-
-## Precision Optimization Guide
-
-### When accuracy drops after conversion
-
-1. Try `--precision_mode=allow_mix_precision` first
-2. If still degraded: `--precision_mode=must_keep_origin_dtype`
-3. If specific ops are problematic: `--op_select_implmode=high_precision`
-4. Use `--precision_mode=allow_fp32_to_fp16` for a balance
-
-### When throughput is critical
-
-1. `--precision_mode=force_fp16` (fastest, may lose accuracy)
-2. `--op_select_implmode=high_performance`
-3. Combine with `--enable_scope_fusion_passes` for aggressive fusion
-
-## Conversion Debugging
-
-### ATC fails with operator error
-
-```bash
-atc --model=model.onnx --framework=5 --output=model.om --soc_version=Ascend310P3 --log=debug 2>&1 | grep -i "fail\|unsupported\|error"
-```
-
-Common operator issues:
-- Custom ONNX ops not registered → write a custom operator plugin
-- Operator not supported on target SOC → check operator list in CANN documentation
-- Dynamic shape constraints → flatten or fix input shape specification
-
-### ATC succeeds but OM fails at runtime
-
-```bash
-# Check CANN version compatibility
-cat /usr/local/Ascend/version.cfg
-# Compare with ATC version used for conversion
-
-# Load the OM with debug logging
-export ASCEND_SLOG_PRINT_TO_STDOUT=1
-export ASCEND_GLOBAL_LOG_LEVEL=1
-```
-
-Root causes:
-1. CANN version mismatch between conversion environment and deployment device
-2. `--soc_version` does not match actual deployment hardware
-3. OM was built for different memory constraints
-
-## AIPP + Conversion Interaction
-
-- **Static AIPP**: parameters frozen at conversion; simpler, no runtime overhead
-- **Dynamic AIPP**: parameters set via `aclmdlSetInputAIPP` at runtime; ATC adds `AippData` input
-- Dynamic batch `--dynamic_batch_size` + AIPP: `batchSize` param must equal max batch
-- Dynamic image size `--dynamic_image_size` + AIPP: `Crop`/`Padding` disabled at runtime
-- `--input_shape` + AIPP: AIPP output W/H must be within the shape range
-
-## Verification Checklist
-
-- [ ] `--soc_version` matches deployment device (check `npu-smi info`)
-- [ ] CANN version on conversion host and deployment device are compatible (within 4 minor versions)
-- [ ] Input shape(s) match runtime data
-- [ ] AIPP config (if used) matches runtime input format and layout
-- [ ] Dynamic shape policy (if used) is consistent between conversion and runtime code
-- [ ] Accuracy validated after conversion (compare NPU output vs CPU/GPU reference)
-- [ ] Throughput measured after conversion (not just single-inference latency)
-- [ ] `atc --debug` shows no unsupported operator fallbacks
+- [ ] Framework and ONNX outputs match on representative and boundary inputs.
+- [ ] Target SoC and installed ATC/CANN versions are recorded.
+- [ ] Every ATC option exists in selected-version help/docs and has a stated reason.
+- [ ] Conversion exit status, full log, and artifact checksum are retained.
+- [ ] OM runtime I/O metadata matches application binding and preprocessing.
+- [ ] OM accuracy passes against reference outputs for every deployed profile.
+- [ ] Runtime load/execution succeeds in the reviewed device context.
+- [ ] End-to-end performance is measured with product-equivalent preprocessing, copies, and postprocessing.

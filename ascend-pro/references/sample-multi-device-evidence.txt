@@ -1,5 +1,11 @@
 == Device Context: Ascend310P host video service ==
 
+Host Token: h-111111111111
+NPU Serial Token: s-222222222222
+Deployment: host
+Device Index: 0
+Collected UTC: 2026-07-28T01:00:00Z
+
 == System ==
 Linux ascend310p-host 5.10.0 #1 SMP aarch64 GNU/Linux
 
@@ -7,6 +13,8 @@ Linux ascend310p-host 5.10.0 #1 SMP aarch64 GNU/Linux
 PRETTY_NAME="Ubuntu 22.04"
 
 == Ascend Device ==
+Driver Version: 23.0.0
+Firmware Version: 7.1.0
 | 0     Ascend310P     OK      12.5      48       1024 / 8192       32          |
 
 == CANN Environment ==
@@ -17,11 +25,20 @@ ASCEND_TOOLKIT_HOME=/usr/local/Ascend/ascend-toolkit/7.0.RC1
 /usr/local/Ascend/ascend-toolkit/7.0.RC1/runtime/lib64/libascendcl.so
 /usr/local/Ascend/ascend-toolkit/7.0.RC1/runtime/lib64/libacl_dvpp.so
 
+== ATC Version ==
+ATC version 7.0.RC1
+
 == Model ==
 models/yolo_310p.om
 atc --soc_version=Ascend310P3 --model=yolo.onnx --output=models/yolo_310p
 
 == Device Context: Atlas200I-A2 container edge app ==
+
+Host Token: h-111111111111
+NPU Serial Token: s-333333333333
+Deployment: container
+Device Index: 1
+Collected UTC: 2026-07-28T01:05:00Z
 
 == System ==
 Linux atlas200i-container 5.10.0 #1 SMP aarch64 GNU/Linux
@@ -30,6 +47,8 @@ Linux atlas200i-container 5.10.0 #1 SMP aarch64 GNU/Linux
 PRETTY_NAME="Ubuntu 20.04"
 
 == Ascend Device ==
+Driver Version: 22.0.0
+Firmware Version: 6.4.0
 | 0     Atlas 200I A2  OK      8.0       45       512 / 4096        18          |
 
 == CANN Environment ==
@@ -39,6 +58,9 @@ ASCEND_TOOLKIT_HOME=/usr/local/Ascend/ascend-toolkit/6.3.RC2
 == Libraries ==
 /usr/local/Ascend/ascend-toolkit/6.3.RC2/runtime/lib64/libascendcl.so
 /usr/local/Ascend/ascend-toolkit/6.3.RC2/runtime/lib64/libacl_dvpp.so
+
+== ATC Version ==
+ATC version 6.3.RC2
 
 == Model ==
 models/yolo_atlas200i_a2.om

@@ -80,7 +80,7 @@ Suspect:
 - Check thermal, power, and clock-related output when available.
 - Check process CPU usage per major thread.
 - Check memory usage and allocation churn.
-- Check dmesg for driver reset, permission, or memory errors.
+- If kernel logs are necessary and authorized, inspect only the relevant time window locally; redact it before sharing.
 - Check whether benchmark and product workloads use the same input resolution, batch, and preprocessing.
 
 ## Minimal Measurement Standard

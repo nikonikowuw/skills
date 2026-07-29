@@ -2,83 +2,68 @@
 
 ## Purpose
 
-Use a stable in-repo location for the reviewed Ascend baseline so future turns can treat it as project context instead of reconstructing from chat history. The file must preserve device-scoped sections when the project supports multiple devices.
+Keep parser output separate from reviewed project knowledge. Generated evidence is a draft; it must
+never replace annotations, verification history, or decisions made by a human reviewer.
 
-## Context File Structure
+## Layout
 
-Each device context is stored as a separate file keyed by the machine ID:
-
-```
-.agent/
-  ascend-pro/
-    context/
-      {machine_id_A}.md     # Machine A's context
-      {machine_id_B}.md     # Machine B's context (different hardware)
-```
-
-`.agent/ascend-pro/context/{machine_id}.md` is a **combined context file** that includes:
-- Context metadata (context ID, machine ID, device model, deployment type, version info)
-- Device baseline (hardware, CANN, .so, symbols, model artifacts)
-- Key API signatures relevant to the project
-- Memory alignment rules (stride, buffer size formulas)
-- AIPP configuration and model conversion notes
-- Device-scoped runtime contexts for multi-device projects
-- Verification history and open risks
-- Pointers to official docs via `ctx_search`
-
-## Rationale
-
-- **Filename = machine_id**: the machine ID (`/etc/machine-id`) uniquely identifies a machine. Looking up context by machine ID is deterministic and eliminates the need for an extra comparison step.
-- **Multi-device native**: different machines (host vs container, 310P vs 200I A2) each get their own file naturally.
-- **Self-validating**: if the file exists, it IS the context for that machine — no need to store-and-compare machine_id inside the file.
-- **Reliable**: `/etc/machine-id` is available on every Linux system regardless of driver version or container permissions.
-
-## Rule
-
-Do not treat the generated file as final until it has passed the review steps in [baseline-review-checklist.md](baseline-review-checklist.md).
-
-## Agent Workflow
-
-1. Get device machine ID from user — run `cat /etc/machine-id`. This is used as the context filename key.
-2. Check if `.agent/ascend-pro/context/{machine_id}.md` already exists.
-   - If yes, read it and proceed (filename guarantees match).
-   - If no, generate one (see below).
-3. Generate a baseline draft from pasted device evidence using `scripts/render-project-baseline.py`.
-4. Append API context (key signatures, alignment rules, active AIPP configs, ctx_search pointers).
-5. Review and correct the combined context manually.
-6. Write the final context to `.agent/ascend-pro/context/{machine_id}.md` (see [context.md format](../SKILL.md#contextmd-document-format)).
-7. Read this file first in every future session before making code changes.
-
-## Script Support
-
-`scripts/render-project-baseline.py` supports:
-
-- `--write-default`
-  - **Recommended.** Auto-detects `machine_id` from `/etc/machine-id` (or npu-smi fallback) and writes to `.agent/ascend-pro/context/{machine_id}.md`. Creates the directory if needed.
-- `-o .agent/ascend-pro/context/{machine_id}.md`
-  - Writes to the standard path (substitute actual machine_id).
-- `-o <path>`
-  - Writes to an explicit path.
-
-## Suggested Usage
-
-From the project root (recommended — auto-detects machine_id):
-
-```bash
-python3 /path/to/render-project-baseline.py pasted-device-evidence.txt --write-default
+```text
+.agent/ascend-pro/
+  drafts/
+    <context-id>.generated.md
+  context/
+    <context-id>.md
 ```
 
-Or with pasted stdin:
+- `drafts/` contains replaceable parser output.
+- `context/` contains reviewed context created from [context-template.md](context-template.md).
+- `<context-id>` is a filename-safe composite identifier described in
+  [device-scoped-context.md](device-scoped-context.md). It never contains a raw machine ID or serial.
 
-```bash
-cat pasted-device-evidence.txt | python3 /path/to/render-project-baseline.py --write-default
-```
+Add `.agent/ascend-pro/context-key` and raw evidence bundles to `.gitignore` if a local workflow creates
+them. Do not commit raw host identifiers or unreviewed diagnostic output.
 
-Or specify the path explicitly:
+## Workflow
 
-```bash
-mkdir -p .agent/ascend-pro/context
-python3 /path/to/render-project-baseline.py pasted-device-evidence.txt -o .agent/ascend-pro/context/abc123def4567890abc123def4567890.md
-```
+1. Collect and sanitize evidence with `scripts/collect-ascend-debug.sh`.
+2. Inspect the bundle before transferring or pasting it. Remove any project-specific value that should
+   not leave the deployment environment.
+3. Generate a draft:
 
-After generating the baseline portion, manually append API context and other sections following the [context.md format](../SKILL.md#contextmd-document-format) guide in SKILL.md.
+   ```bash
+   python3 /path/to/render-project-baseline.py ascend-evidence/ascend-evidence.txt --write-draft
+   ```
+
+4. Review it with [baseline-review-checklist.md](baseline-review-checklist.md).
+5. Create or update `.agent/ascend-pro/context/<context-id>.md` using
+   [context-template.md](context-template.md). Copy only verified facts from the draft.
+6. Record source, date, target, and unresolved facts.
+7. On later sessions, revalidate the identity and version fingerprint before reusing the reviewed file.
+
+## Write Semantics
+
+`render-project-baseline.py` follows these rules:
+
+- `--write-draft` writes only under `.agent/ascend-pro/drafts/`.
+- Missing safe identity data is an error for `--write-draft`; it never creates `unknown.md`.
+- Existing output is an error. Pass `--force` only when intentionally replacing a generated draft.
+- `-o <name>.generated.md` is available for explicit draft paths and has the same no-overwrite default.
+- The renderer refuses evidence containing a raw machine ID. Sanitize first.
+- Generated files use owner-only permissions; the renderer refuses symlink targets and reviewed-context paths.
+
+Never point the renderer at `.agent/ascend-pro/context/`. Reviewed context is updated through deliberate
+review, not parser overwrite.
+
+## Cache Validation
+
+File existence does not establish validity. Before using reviewed context, compare at least:
+
+- pseudonymous host token and selected NPU serial token or device index;
+- device model and host/container boundary;
+- driver, firmware, CANN root/version, and loaded runtime libraries;
+- header source and target binary linkage;
+- OM artifact checksum or provenance when model behavior matters;
+- `Last verified` date and any invalidation event.
+
+Create a new context ID or mark the old context stale after a card replacement, device-index reassignment,
+driver/CANN update, container image change, runtime path change, or OM regeneration.

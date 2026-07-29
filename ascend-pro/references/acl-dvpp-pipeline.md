@@ -15,7 +15,8 @@ The critical design question at each hop is:
 - Does the next stage consume the current memory directly?
 - Or does the code copy to host memory, repack, convert, or allocate a new device buffer every frame?
 
-> ⚠️ **Memory alignment is critical for DVPP.** See [memory-alignment.md](memory-alignment.md) for stride alignment rules and buffer size formulas.
+Buffer layout is critical for DVPP. Use [memory-alignment.md](memory-alignment.md) to verify the selected
+device/CANN rules and implement checked size calculations before writing DVPP code.
 
 ## DVPP Guidance
 

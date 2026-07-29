@@ -34,7 +34,7 @@ For multi-device projects, maintain a matrix with one row per context:
 
 | Context ID | Device model | Driver/firmware | CANN root | `libascendcl.so` | DVPP lib | Headers | OM artifact | Linkage |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| `Ascend310P-host-video-infer` | Ascend310P | observed or unknown | observed path | observed path | observed path | observed path | model path | ldd/readelf facts |
+| `<safe-context-id>` | Ascend310P | observed or unknown | observed path | observed path | observed path | observed path | model path/checksum | ldd/readelf facts |
 
 Use this matrix when handing context to another agent. The active row is the only row that should drive implementation unless the task is explicitly multi-device compatibility work.
 
@@ -43,7 +43,7 @@ Use this matrix when handing context to another agent. The active row is the onl
 Find the deployed libraries:
 
 ```bash
-find /usr/local/Ascend /usr /usr/local -maxdepth 6 \
+find "${ASCEND_HOME_PATH:-/usr/local/Ascend}" -maxdepth 7 \
   \( -name 'libascendcl.so*' -o -name 'libacl_dvpp.so*' -o -name 'libacl_op_compiler.so*' -o -name 'libge_runner.so*' \) 2>/dev/null
 ```
 
@@ -62,8 +62,8 @@ Check compile-time and runtime API surfaces:
 
 ```bash
 rg -n 'acl/acl|acl_dvpp|ascendcl|aclrt|aclmdl|acldvpp|ATC|ASCEND_HOME_PATH|LD_LIBRARY_PATH' .
-readelf -Ws <ascend-shared-object> | grep -E 'aclrt|aclmdl|acldvpp|aclInit|aclFinalize'
-nm -D <ascend-shared-object> | grep -E 'aclrt|aclmdl|acldvpp|aclInit|aclFinalize'
+readelf -Ws <ascend-shared-object> | rg 'aclrt|aclmdl|acldvpp|aclInit|aclFinalize'
+nm -D <ascend-shared-object> | rg 'aclrt|aclmdl|acldvpp|aclInit|aclFinalize'
 ```
 
 Do not code to a function mentioned in documentation until the deployed shared object exports it and the selected headers match the intended build target.

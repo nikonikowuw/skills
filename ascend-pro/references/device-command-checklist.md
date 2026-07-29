@@ -1,114 +1,92 @@
 # Device Command Checklist
 
-## Purpose
+Use this only when the bundled collector cannot run. Prefer
+`scripts/collect-ascend-debug.sh`, which derives safe identity tokens and sanitizes output.
 
-Use this checklist when you need exact commands for a user to run on a target Ascend device.
+## Privacy Rules
 
-If the project supports multiple device models, tell the user to run the checklist separately for each device and wrap each output with a label:
+- Do not paste `/etc/machine-id`, raw board/chip serials, complete environment output, `dmesg`, user groups,
+  home-directory contents, container inspection JSON, or credentials.
+- Replace serial values with stable local tokens or `<redacted>`.
+- Inspect every command result before transferring it. Command output can contain project-sensitive paths.
+- Label host and container blocks separately. Run once per selected NPU device index.
+
+## Context Label
+
+Start each block with non-sensitive metadata:
 
 ```text
-== Device Context: Ascend310P host video service ==
-<outputs>
-
-== Device Context: Atlas200I-A2 container edge app ==
-<outputs>
+== Device Context: host device-0 ==
+Host Token: h-<locally-derived-token>
+Deployment: host
+Device Index: 0
+Collected UTC: YYYY-MM-DDTHH:MM:SSZ
 ```
 
-Without labels, host, container, and device-specific `.so` facts are easy to mix.
+If a pseudonymous host token cannot be generated, use `unavailable`; do not substitute the raw machine ID.
 
-> ⚠️ **Machine ID is mandatory.** The machine ID (`cat /etc/machine-id`) uniquely identifies the device. Even same-model devices with different driver versions are separate contexts. Always collect it.
-
-## Host Or Bare-Metal Device
+## System And Device
 
 ```bash
-cat /etc/machine-id                      # device context key (PRIMARY)
 uname -a
-cat /etc/os-release
+sed -n 's/^PRETTY_NAME=//p' /etc/os-release
 npu-smi info
-npu-smi info -t board -i 0 2>/dev/null || npu-smi info -t board 2>/dev/null || true
-npu-smi info -t chip -i 0 2>/dev/null || npu-smi info -t chip 2>/dev/null || true
-npu-smi info -t usages 2>/dev/null || true
-ls -l /dev/davinci* /dev/davinci_manager /dev/devmm_svm /dev/hisi_hdc 2>/dev/null
-groups
+npu-smi info -t board -i 0 2>/dev/null || true
+npu-smi info -t chip -i 0 2>/dev/null || true
+ls -l /dev/davinci* /dev/davinci_manager /dev/devmm_svm /dev/hisi_hdc 2>/dev/null || true
 ```
 
-The machine ID (`cat /etc/machine-id`) is the primary context key — it is stable, unique per
-machine, and works regardless of driver version or container permissions. The serial number
-from `npu-smi info -t board` serves as fallback if machine-id is unavailable.
+Redact serial-number fields before sharing. Retain device index, model, driver/firmware, health, and
+visibility fields needed for diagnosis.
 
 ## CANN Tools And Environment
 
 ```bash
-which npu-smi atc aclprof msame ais_bench 2>/dev/null
+command -v npu-smi atc aclprof msprof msame ais_bench 2>/dev/null || true
 atc --version 2>/dev/null || true
-aclprof --help 2>/dev/null | head -n 20 || true
 printf 'ASCEND_HOME_PATH=%s\n' "${ASCEND_HOME_PATH:-}"
 printf 'ASCEND_TOOLKIT_HOME=%s\n' "${ASCEND_TOOLKIT_HOME:-}"
-printf 'LD_LIBRARY_PATH=%s\n' "${LD_LIBRARY_PATH:-}"
+printf 'ASCEND_AICPU_PATH=%s\n' "${ASCEND_AICPU_PATH:-}"
 ```
 
-Avoid posting unrelated environment variables. They may contain credentials.
+Do not print the entire environment or `LD_LIBRARY_PATH`. If runtime search paths are relevant, extract only
+Ascend-related entries and inspect them before sharing.
 
-## Library And Header Discovery
+## Libraries, Headers, Linkage, And Symbols
 
-```bash
-find /usr/local/Ascend /usr /usr/local -maxdepth 6 \
-  \( -name 'libascendcl.so*' -o -name 'libacl_dvpp.so*' -o -name 'libacl_op_compiler.so*' -o -name 'libge_runner.so*' -o -name 'acl.h' -o -name 'acl_dvpp.h' \) 2>/dev/null
-```
-
-## Target Binary Linkage
+Search only known Ascend roots rather than all of `/usr`:
 
 ```bash
+find "${ASCEND_HOME_PATH:-/usr/local/Ascend}" -maxdepth 7 \
+  ( -name 'libascendcl.so*' -o -name 'libacl_dvpp.so*' \
+  -o -name 'libacl_op_compiler.so*' -o -name 'libge_runner.so*' \
+  -o -name 'acl.h' -o -name 'acl_rt.h' -o -name 'acl_mdl.h' -o -name 'acl_dvpp.h' ) \
+  2>/dev/null
+
 ldd <target-binary-or-so>
 readelf -d <target-binary-or-so>
+readelf -Ws <actual-loaded-ascend-so> | rg 'aclInit|aclFinalize|aclrt|aclmdl|acldvpp'
 ```
 
-If the project uses `dlopen`, also run:
+For `dlopen`, inspect the repository and runtime-resolved paths. A discovery scan does not prove which
+library the application loads.
+
+## Model Evidence
+
+Collect only paths relevant to the selected deployment and record checksums where practical:
 
 ```bash
-rg -n 'dlopen|RTLD_|libascendcl|libacl_dvpp|ASCEND_HOME_PATH|LD_LIBRARY_PATH' .
+find <model-directory> -maxdepth 3 \
+  ( -name '*.om' -o -name '*.onnx' -o -name '*aipp*.cfg' -o -name '*atc*.log' ) \
+  2>/dev/null
+sha256sum <selected-model.om>
 ```
 
-## Exported Symbols
+Also retain the exact ATC version/command, source model checksum, target SoC, input names/shapes/layouts,
+precision policy, dynamic-shape policy, and AIPP config.
 
-```bash
-nm -D <ascend-shared-object> | grep -E 'aclInit|aclFinalize|aclrt|aclmdl|acldvpp'
-readelf -Ws <ascend-shared-object> | grep -E 'aclInit|aclFinalize|aclrt|aclmdl|acldvpp'
-```
+## Container Deployment
 
-Use `libascendcl.so` for ACL runtime and model APIs. Use the DVPP-related shared object that the installed CANN package actually provides for DVPP symbol checks.
-
-## Project Search
-
-Run from the project root:
-
-```bash
-rg -n 'ascend|CANN|ASCEND|acl/acl|aclrt|aclmdl|acldvpp|dvpp|aipp|atc|\\.om|aclrtMemcpy|aclrtSynchronizeStream|find_library|target_link_libraries|include_directories|dlopen' .
-```
-
-## Model Artifact Evidence
-
-Collect:
-
-```bash
-find . -maxdepth 6 \( -name '*.om' -o -name '*aipp*.cfg' -o -name '*atc*.log' -o -name '*.onnx' \) 2>/dev/null
-```
-
-If available, paste:
-
-- The ATC command used to generate the `.om`.
-- Conversion logs.
-- Input shape and dynamic shape policy.
-- AIPP config file.
-
-## Container Deployments
-
-On the host:
-
-```bash
-npu-smi info
-ls -l /dev/davinci* /dev/davinci_manager /dev/devmm_svm /dev/hisi_hdc 2>/dev/null
-docker inspect <container> 2>/dev/null | grep -Ei 'davinci|ascend|device|mount|LD_LIBRARY_PATH' -C 3 || true
-```
-
-Inside the container, repeat the CANN tools, library, and linkage checks. Host and container evidence must be reviewed together.
+Collect separate host and in-container blocks. Record only the relevant device mounts, Ascend runtime
+mounts, and container image digest. Do not paste full `docker inspect` output. Verify host driver/device
+visibility together with the libraries and headers actually used inside the container.

@@ -1,93 +1,79 @@
 # Device-Scoped Context
 
-## Purpose
-
-Use this reference whenever a project or conversation mentions more than one Ascend device model, more than one CANN install, multiple containers, or multiple `.so` versions. The goal is to prevent context pollution: applying one device's runtime facts to another device.
-
 ## Core Rule
 
-Treat each target runtime as an indivisible context:
+Treat each deployed runtime as an indivisible context:
 
-`machine ID + device model + driver/firmware + CANN root + runtime .so set + headers + Python packages + container or host environment + OM artifact`
+```text
+pseudonymous host token + NPU identity + device model + driver/firmware + CANN fingerprint
++ loaded libraries + headers + deployment boundary + OM artifact
+```
 
-The **machine ID** (`machine_id`, from `/etc/machine-id`) is the unique identifier. Even the same device model with a different driver version is a different context. Always verify the machine ID matches before reusing a cached context.
+Do not transfer a library path, exported symbol, ATC flag, AIPP config, alignment value, or performance
+conclusion between contexts without evidence that the relevant fields match.
 
-Do not carry a library path, exported symbol, ATC flag, AIPP config, or performance conclusion from one context into another unless the evidence explicitly proves they are the same (same machine ID, same driver, same CANN version).
+## Pseudonymous Identity
+
+Do not ask the user to paste `/etc/machine-id` or raw board serials. The collection helper derives:
+
+- `host token`: an application-specific HMAC-derived token calculated locally from machine ID;
+- `serial token`: a locally HMAC-derived token for board/chip serial fields when those fields exist;
+- `device index`: the selected runtime index, retained because one host may expose several NPUs.
+
+These tokens support correlation without storing the original identifiers. They are not anonymous,
+authentication credentials, or proof of device identity; a party with candidate values can try to derive
+matching tokens. Keep evidence access-controlled. Containers may share a host token, device indexes may
+change, and cloned systems can contain bad identity data. Always validate the full fingerprint.
 
 ## Context ID
 
-Assign a context ID that includes the machine ID:
+Use:
 
 ```text
-<abbreviated-machine-id>-<device-model>-<host-or-container>-<purpose>
+<host-token>-<serial-token-or-device-index>-<host-or-container>-<cann-fingerprint>
 ```
 
-Examples:
+Example: `h-8f21a94c-s-311af027-container-c-73f102b0`.
 
-- `abc123def456-Ascend310P-host-video-infer`
-- `fedcba098765-Atlas200I-A2-container-edge-app`
-- `SN1122334455-Ascend910B-host-batch-infer`
+Only lowercase ASCII letters, digits, dots, underscores, and hyphens are allowed in filenames. Device
+model and purpose belong in context metadata rather than the filename.
 
-When reporting or handing off context, put the active ID first. The serial number ensures you never confuse two physically different devices.
+## Required Fields
 
-## Required Fields Per Context
+Record for each context:
 
-For each device-scoped context, record:
-
-- **Machine ID** (`machine_id`) — mandatory, unique per machine. Get via `cat /etc/machine-id`.
-- Device model and NPU count.
-- Driver and firmware versions.
-- Kernel and OS image.
-- Host or container boundary.
-- CANN root and package provenance.
-- `libascendcl.so` path and version clues.
-- DVPP-related library path and version clues when media acceleration is involved.
-- Header roots used at compile time.
-- Exported symbols checked from the actual runtime `.so`.
-- Python packages when Python is part of runtime or benchmark.
-- OM artifact path, ATC command, target device, input shape, precision, and AIPP config.
-- Target binary linkage or `dlopen` behavior.
+- pseudonymous host token, serial token when available, selected NPU index, and device model/count;
+- driver, firmware, kernel, OS, host/container boundary, and container image identifier when relevant;
+- CANN root, version, package provenance, and tool versions;
+- actual loaded `libascendcl.so` and DVPP libraries, not only discovery results;
+- compile-time header roots and exported symbols required by the code;
+- target binary linkage or `dlopen` behavior;
+- Python runtime packages when applicable;
+- OM checksum/provenance, ATC command/version, target SoC, shapes, precision, and AIPP config;
+- source date, last verification date, invalidation events, and open risks.
 
 ## Multi-Device Behavior
 
-If evidence contains several devices:
+1. Collect one labeled evidence block per runtime target.
+2. Give each target its own reviewed context file.
+3. Select exactly one active context before a device-dependent change.
+4. Keep other contexts as separate alternatives.
+5. For multi-target code, define build/runtime selection and a verification matrix with one row per target.
 
-1. Split evidence into one section per device model or deployment target.
-2. Create a device-scoped runtime matrix.
-3. Mark a single active context before code changes.
-4. Keep other contexts available as alternatives, not as merged facts.
+Host and container are separate deployment contexts even when they share the same host and physical NPU.
+They may use different headers, runtime libraries, environment paths, and OM artifacts.
 
-If the user asks for a generic change that affects all devices, design an explicit compatibility strategy:
+## Reuse Decision
 
-- Build-time profiles per device.
-- Runtime selection by device model.
-- Per-device library and model artifact directories.
-- A verification matrix with one row per supported device.
-
-## Handoff Format
-
-Use this shape when passing context to another agent or future turn:
-
-```text
-Active Ascend runtime context: SN0123456789-Ascend310P-host-video-infer
-- Chip serial number: SN0123456789
-- Device: Ascend310P, 1 NPU
-- Driver/firmware: <observed values or unknown>
-- CANN root: /usr/local/Ascend/ascend-toolkit/latest
-- Runtime libs: libascendcl.so=<path>, libacl_dvpp.so=<path>
-- Headers: <paths>
-- OM artifact: <path and ATC command or unknown>
-- Linkage: <ldd/readelf/dlopen facts>
-- Open risks: <facts that could invalidate changes>
-
-Other contexts exist: SN9876543210-Atlas200I-A2-container-edge-app. Do not reuse its .so or OM facts unless explicitly selected.
-```
+Reuse cached context only when current evidence matches all fields that can affect the requested task. For
+example, a documentation question may need only CANN version, while a performance comparison needs the
+entire runtime and workload fingerprint. Mark mismatches as stale and refresh before drawing conclusions.
 
 ## Red Flags
 
-- The prompt says "Ascend" but the project has several Atlas or Ascend targets.
-- `find` output shows several CANN roots and no `ldd` evidence.
-- Host and container outputs are pasted together without labels.
-- An OM file name includes one device target but the runtime is another device.
-- Headers come from a toolkit path while the binary loads runtime libraries from a different mount.
-- A performance result is quoted without device model, CANN version, input shape, and model artifact.
+- Several CANN roots are discovered but actual binary linkage is missing.
+- Host and container output is mixed without labels.
+- A serial token or selected device index changed unexpectedly.
+- The OM target or checksum differs from the reviewed artifact.
+- Headers come from one package while runtime libraries load from another.
+- A performance number lacks device, runtime, model, shape, and workload identity.

@@ -1,36 +1,35 @@
 # Baseline Review Checklist
 
-## Purpose
+The renderer is a parser, not an authority. Complete this before using a generated draft as runtime context.
 
-Use this checklist after `scripts/render-project-baseline.py` creates an Ascend baseline draft. The parser is a helper, not an authority.
+## Privacy And Provenance
 
-## Review Items
+- [ ] No raw machine ID, board/chip serial, credential, full environment, or unrelated diagnostic remains.
+- [ ] Evidence date, collection boundary, selected device index, and safe identity tokens are recorded.
+- [ ] Host and container evidence are separate and traceable to their commands.
 
-- Confirm the device model and NPU visibility were detected from real command output, not from a file path or project name.
-- Confirm there is a separate baseline section for each device model when multiple devices appear.
-- Confirm the active device context is named before any implementation recommendation.
-- Confirm driver and firmware versions are present or explicitly unknown.
-- Confirm CANN roots and runtime libraries correspond to the project runtime, not just an unused toolkit install.
-- Confirm `.so`, header, symbol, Python package, and OM facts are not merged across device models.
-- Confirm the headers and libraries appear to come from the same CANN package family.
-- Confirm the target binary linkage or `dlopen` behavior is represented.
-- Confirm OM artifact provenance is captured or marked unknown.
-- Confirm container host and container facts are not mixed without explanation.
-- Confirm open risks are actionable and not generic filler.
+## Identity And Stack
 
-## Corrections To Make Manually
+- [ ] Device model/count came from runtime evidence rather than file names, OM names, or ATC flags.
+- [ ] Driver, firmware, CANN/tool versions, and deployment boundary are present or explicitly unknown.
+- [ ] Card/index changes, container image changes, and cloned-host identity risks were considered.
+- [ ] Multiple targets have separate context IDs; one active context is selected.
 
-- Remove false library paths that came from docs or comments.
-- Split host-side and container-side evidence when both appear.
-- Split multi-device evidence into separate device context blocks.
-- Add exact target binary names when known.
-- Add exact model artifact names and conversion commands when known.
-- Mark unsupported claims as unknown instead of inferred.
+## Build And Runtime
+
+- [ ] Discovery paths are distinguished from actual loaded libraries.
+- [ ] Target linkage or `dlopen` resolution proves the libraries used at runtime.
+- [ ] Compile-time headers and loaded libraries belong to the intended package family.
+- [ ] Required API symbols are checked in the actual deployed shared objects.
+
+## Model And Pipeline
+
+- [ ] OM provenance/checksum, ATC version/command, target SoC, shapes, precision, and AIPP are recorded as needed.
+- [ ] Formats, dimensions, strides, allocation APIs, memory owners, copies, and synchronization are explicit.
+- [ ] Device-specific limits cite exact device/CANN documentation or installed headers and a verification date.
 
 ## Acceptance Gate
 
-Only treat the baseline as development context after it states:
-
-- What is known.
-- What remains unknown.
-- Which unknowns can invalidate the planned code change.
+A reviewed context states what is known, how each important fact was verified, what remains unknown, which
+unknowns can invalidate the current task, and what event makes the context stale. Transfer verified facts
+into [context-template.md](context-template.md); do not rename a generated draft into the reviewed directory.

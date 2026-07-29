@@ -1,174 +1,82 @@
-# Zero-Copy Inference Pipeline Guide
+# Copy-Minimized Inference Pipeline
 
-How to design and verify inferencing pipelines that minimize or eliminate host-device copies on Ascend hardware.
+Use “zero-copy” only for a precisely bounded path after accounting for every buffer transition. Many useful
+pipelines still require an input upload or output readback; the engineering goal is to eliminate unnecessary
+copies and repacks, not to win a label.
 
-## The Golden Path
+## Buffer Ledger
 
-```
-source ──[device memory]──> DVPP preproc ──[device]──> AIPP/ACL input ──[NPU]──> OM inference ──[device partial readback]──> postprocess
-```
+Create one row for every hop:
 
-Each hop stays in device memory. No `aclrtMemcpy(H2D)` or `aclrtMemcpy(D2H)` in the hot path.
+| Buffer/hop | Producer | Owner | Allocation API | Memory domain | Format/shape/stride | Consumer | Copy/map/sync |
+|---|---|---|---|---|---|---|---|
+| | | | | | | | |
 
-## Memory Domain Map
+Do not infer visibility from an allocator name. Verify producer/consumer access for the selected device,
+CANN release, run mode, and API path. “Pinned”, “device”, “DVPP”, shared, imported, and mapped buffers are
+not interchangeable terms.
 
-| Buffer Location | Allocation API | Visibility | Typical Use |
-|---|---|---|---|
-| Device memory (NPU DDR) | `aclrtMalloc` | NPU only | Model input/output tensors, DVPP output |
-| Host memory (physically contiguous) | `aclrtMallocHost` | CPU + DMA | Zero-copy input sources, large buffers |
-| Host memory (virtual) | `malloc`/`new` | CPU only | OpenCV, ffmpeg output, control data |
-| DVPP device memory | `acldvppMalloc` | DVPP + NPU | Raw decoded frames, VPC output |
-| AIPP | config file + `--insert_op_conf` | inside model pipe | Preprocessing absorbed into model pipeline |
+## Verification Procedure
 
-## Common Copy Patterns (Anti-Patterns)
+1. Identify where bytes originate and which component first owns them.
+2. Trace decode/capture, format conversion, crop/resize/pad, model input, model output, and postprocess.
+3. Search source and wrappers for memcpy, map/unmap, imports/exports, CPU image operations, serialization,
+   temporary tensor construction, and fallback paths.
+4. Record actual descriptors, strides, capacities, and allocation/free pairs.
+5. Record every stream/event/callback and the buffer lifetime it protects.
+6. Use profiling/tracing or controlled counters to prove copy direction and bytes when tools expose them.
+7. Verify output correctness before and after removing a boundary.
+8. Compare end-to-end latency, throughput, CPU use, and memory pressure with the same workload.
 
-### Anti-pattern 1: CPU preprocess → H2D copy
-```
-OpenCV decode → CPU RGB → BGR → resize → aclrtMemcpy(H2D) → model input
-```
-**Fix:** DVPP decode + VPC resize, keep device-resident. Or AIPP for resize/CSC.
+## Common Copy Boundaries
 
-### Anti-pattern 2: Readback for inspection → re-upload
-```
-DVPP output → aclrtMemcpy(D2H) for "checking" → aclrtMemcpy(H2D) → model input
-```
-**Fix:** Keep DVPP output on device. Debug with selective D2H on first frame only.
+- CPU decode or OpenCV preprocessing followed by host-to-device upload.
+- DVPP output read back for inspection and uploaded again for inference.
+- DVPP/AIPP/model format mismatch requiring an intermediate repack.
+- Framework or wrapper code allocating a hidden staging tensor.
+- Full output readback when the application needs only a smaller result.
+- Per-frame allocation or descriptor construction that looks like copy cost in profiles.
+- Immediate synchronization after each asynchronous operation.
 
-### Anti-pattern 3: Per-frame allocation churn
-```
-for each frame:
-    aclrtMalloc(input_buf, size)
-    aclrtMalloc(output_buf, size)
-    aclmdlExecute(...)
-    aclrtFree(input_buf)
-    aclrtFree(output_buf)
-```
-**Fix:** Pre-allocate buffer pool once; reuse. Use double/triple buffering for async pipelines.
+Selective debug readback can be valid. Keep it sampled and outside production measurements.
 
-### Anti-pattern 4: Full tensor readback
-```
-aclmdlExecute → aclrtMemcpy(D2H, full_output) → CPU postprocess → select top-5
-```
-**Fix:** If postprocess only needs metadata (e.g., detection boxes), restructure to read only the relevant portion, or move postprocess to device.
+## Buffer Pool Design
 
-### Anti-pattern 5: Synchronize after every operation
-```
-acldvppVpcResizeAsync(...) → aclrtSynchronizeStream(...)
-aclrtMemcpyAsync(...) → aclrtSynchronizeStream(...)
-aclmdlExecuteAsync(...) → aclrtSynchronizeStream(...)
-```
-**Fix:** Queue all operations, synchronize once at the end. Use separate streams for producer/consumer pipelining.
+For each slot, track allocation capacity, descriptor wrappers, owner, state, generation, completion token,
+and the exact point at which it can be reused. Check all allocation calls and preserve the old allocation
+until a replacement succeeds; do not free-then-allocate and leave a corrupted slot on failure.
 
-## Zero-Copy Verification Procedure
+Pool size is a measured backpressure decision. Double or triple buffering does not create concurrency by
+itself, and several pipeline stages cannot safely reuse one stream or buffer without explicit dependencies.
 
-For each claimed zero-copy path, trace every byte:
+## Async Design
 
-1. **Source allocation**: Where is the input buffer allocated? (device? host?)
-2. **First touch**: Who writes to it first? (VPU? CPU? DMA?)
-3. **Transformations**: Any format conversion, resize, crop along the way? Where does it happen? (CPU? DVPP? AIPP?)
-4. **Boundary crossings**: Every `aclrtMemcpy` call in the path. Classify H2D, D2H, D2D.
-5. **Synchronization**: Where does the code call `aclrtSynchronizeStream` or `aclrtSynchronizeDevice`?
-6. **Lifetime management**: Are buffers allocated per-frame or pooled?
-7. **Output routing**: Is the full output tensor copied to host, or only metadata?
+- Model streams, DVPP streams, callbacks, and CPU queues as a dependency graph.
+- Keep input, output, datasets, descriptors, and dynamic/AIPP parameter objects alive through completion.
+- Use the completion primitive supported by the exact CANN/API surface.
+- Avoid global device synchronization unless recovery or shutdown requires it.
+- Bound queues and define drop/backpressure behavior for real-time workloads.
+- Handle submit failure, partial pipeline completion, cancellation, EOS, timeout, and shutdown.
 
-## Async Pipeline Design
+Measure device completion and downstream availability, not only enqueue duration. Prove overlap with a
+timeline or throughput experiment rather than counting async API names.
 
-### Double-buffered async inference
+## Output Strategy
 
-```c
-// Setup: two sets of buffers
-aclrtMalloc(input_buf[0], ...); aclrtMalloc(input_buf[1], ...);
-aclrtMalloc(output_buf[0], ...); aclrtMalloc(output_buf[1], ...);
-aclrtCreateStream(stream);
+Start from application requirements. If CPU code needs complete logits, a D2H copy may be correct. If only
+top-k, boxes, or metadata are required, evaluate device-side or reduced postprocessing only when supported by
+the project/toolchain and justified by accuracy, maintenance, and performance results. Do not assume an
+arbitrary slice of an output allocation can be copied independently of tensor layout.
 
-int frame = 0;
-while (has_data) {
-    int buf_idx = frame % 2;
-    // Preprocess next frame into input_buf[buf_idx]
-    preprocess_frame(frame, input_buf[buf_idx]);
+## Claim Template
 
-    // Async inference
-    aclmdlExecuteAsync(modelId, input_buf[buf_idx], output_buf[buf_idx], stream);
+Use this wording for verified results:
 
-    if (frame > 0) {
-        // Process previous output while current inference runs
-        int prev_idx = (frame - 1) % 2;
-        aclrtSynchronizeStream(stream);  // or use callback
-        process_output(output_buf[prev_idx]);
-    }
-    frame++;
-}
-// Final sync
-aclrtSynchronizeStream(stream);
-process_output(output_buf[(frame-1) % 2]);
+```text
+Between <producer> and <consumer>, the selected runtime passes <buffer identity/domain> without an explicit
+host copy or repack. Evidence: <source trace + runtime profile>. Remaining transfers: <list>. Synchronization:
+<list>. Verified on <context ID>, <workload>, <date>.
 ```
 
-### Triple-buffering for decode → preproc → infer → postproc
-
-Use 3 streams:
-- Stream A: DVPP decode + VPC
-- Stream B: AIPP (if dynamic) + model input binding + inference
-- Stream C: output readback + postprocess
-
-With 3 buffer sets to decouple producer/consumer timing.
-
-## Device-Memory Buffer Pools
-
-### Input buffer pool pattern
-
-```c
-#define POOL_SIZE 4
-typedef struct {
-    void *devPtr;
-    size_t size;
-    int in_use;
-} BufferSlot;
-
-BufferSlot input_pool[POOL_SIZE];
-void *acquire_input_buffer(size_t required_size) {
-    for (int i = 0; i < POOL_SIZE; i++) {
-        if (!input_pool[i].in_use) {
-            if (input_pool[i].size < required_size) {
-                aclrtFree(input_pool[i].devPtr);
-                aclrtMalloc(&input_pool[i].devPtr, required_size, ACL_MEM_MALLOC_HUGE_FIRST);
-                input_pool[i].size = required_size;
-            }
-            input_pool[i].in_use = 1;
-            return input_pool[i].devPtr;
-        }
-    }
-    // Block until one is free (or grow pool)
-    return NULL;
-}
-```
-
-## Profiling Copies
-
-Use Ascend profiling tools to find hidden copies:
-
-```bash
-# Enable profiling
-export ASCEND_PROFILING_OUTPUT=/path/to/profiling
-export ASCEND_PROFILING_MODE=taskwise
-
-# Run inference
-./your_pipeline
-
-# Check for H2D/D2H transfers in profiling output
-# Look for: Memcpy(H2D), Memcpy(D2H), Memcpy(D2D)
-```
-
-### Stage timing to isolate copy costs
-
-```python
-# scripts/summarize-stage-latency.py
-# Use it on timing logs to find which stage dominates
-```
-
-## Design Principles
-
-1. **Device-resident handoff**: If the next stage can consume the current buffer directly, do not route through host.
-2. **Prefetch and pipeline**: Let the NPU work while CPU prepares the next frame.
-3. **Pool, don't allocate**: Per-frame malloc/free is a throughput killer.
-4. **Measure, don't assume**: What looks zero-copy may have hidden D2H via AIPP fallback or DVPP alignment copy.
-5. **Partial readback**: Postprocess on device when possible; only read back what the application needs.
+If any wrapper, driver, framework, or imported-buffer behavior is unobserved, say “no explicit application
+copy observed” rather than “zero-copy”.

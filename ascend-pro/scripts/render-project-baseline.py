@@ -1,61 +1,60 @@
 #!/usr/bin/env python3
+"""Render a reviewable Ascend runtime-context draft from sanitized evidence."""
+
 import argparse
+import hashlib
 import re
 import sys
 from pathlib import Path
 
 
-DEFAULT_OUTPUT_CANDIDATES = (
-    ".agent/ascend-pro/context/{machine_id}.md",
-    ".agent-context/ascend-baseline.md",
-    "docs/ascend-baseline.md",
+RAW_MACHINE_ID_PATTERN = re.compile(
+    r"(?im)(?:^[0-9a-f]{32}$|^\s*machine[\s_-]*id\s*[:=]\s*[0-9a-f]{32}\s*$)"
 )
-
-LIB_PATTERNS = {
-    "libascendcl": re.compile(r"(?P<path>/[^\s]*libascendcl\.so[^\s]*)"),
-    "libacl_dvpp": re.compile(r"(?P<path>/[^\s]*libacl_dvpp\.so[^\s]*)"),
-    "libacl_op_compiler": re.compile(r"(?P<path>/[^\s]*libacl_op_compiler\.so[^\s]*)"),
-    "libge_runner": re.compile(r"(?P<path>/[^\s]*libge_runner\.so[^\s]*)"),
-}
-
-SYMBOL_GROUPS = {
-    "runtime": ("aclInit", "aclFinalize", "aclrtSetDevice", "aclrtCreateContext", "aclrtCreateStream"),
-    "memory": ("aclrtMalloc", "aclrtFree", "aclrtMemcpy", "aclrtMemcpyAsync"),
-    "model": ("aclmdlLoadFromFile", "aclmdlExecute", "aclmdlExecuteAsync", "aclmdlCreateDataset"),
-    "dvpp": ("acldvppCreateChannel", "acldvppJpegDecodeAsync", "acldvppVpcResizeAsync", "acldvppVpcCropAndPasteAsync"),
-}
-
-NODE_PATTERN = re.compile(r"/dev/(?:davinci\d+|davinci_manager|devmm_svm|hisi_hdc)")
-HEADER_PATTERN = re.compile(r"(?:(?:-I)|include_directories\(|target_include_directories\()[^)\\\n]*", re.IGNORECASE)
-LIBROOT_PATTERN = re.compile(r"(?:(?:-L)|link_directories\(|target_link_directories\()[^)\\\n]*", re.IGNORECASE)
-SDK_PATH_PATTERN = re.compile(r"(/[^\s'\"()]*?(?:Ascend|ascend|CANN|cann|acl|ACL)[^\s'\"()]*)")
-DL_PATTERN = re.compile(r"\bdlopen\b|RTLD_", re.IGNORECASE)
-OS_RELEASE_PATTERN = re.compile(r'PRETTY_NAME="?([^"\n]+)"?')
-KERNEL_PATTERN = re.compile(r"^Linux\s+.+", re.MULTILINE)
+HOST_TOKEN_PATTERN = re.compile(r"(?im)^Host Token:\s*(h-[0-9a-f]{8,64})\s*$")
+SERIAL_TOKEN_PATTERN = re.compile(
+    r"(?im)^(?:NPU )?(?:Serial|Chip Sn|Chip Serial|Board Sn|Board Serial|Device Serial) Token:"
+    r"\s*(s-[0-9a-f]{8,64})\s*$"
+)
+DEVICE_INDEX_PATTERN = re.compile(r"(?im)^Device Index:\s*([0-9]+)\s*$")
+DEPLOYMENT_PATTERN = re.compile(r"(?im)^Deployment:\s*([A-Za-z0-9._-]+)\s*$")
+COLLECTED_PATTERN = re.compile(r"(?im)^Collected UTC:\s*([^\n]+)")
+CONTEXT_HEADER_PATTERN = re.compile(
+    r"^==\s*Device Context:\s*(?P<label>.+?)\s*==\s*$", re.IGNORECASE | re.MULTILINE
+)
 DEVICE_PATTERN = re.compile(
-    r"(?<![A-Za-z0-9_-])(Ascend\s*\d+[A-Za-z0-9]*|Atlas\s*200I(?:\s|-)?A2|Atlas\s*(?:300|500|800|900|A\d+)[A-Za-z0-9_-]*)(?![A-Za-z0-9_-])",
+    r"(?<![A-Za-z0-9_-])(Ascend\s*\d+[A-Za-z0-9]*|Atlas\s*200I(?:\s|-)?A2|"
+    r"Atlas\s*(?:300|500|800|900|A\d+)[A-Za-z0-9_-]*)(?![A-Za-z0-9_-])",
     re.IGNORECASE,
 )
-ATC_PATTERN = re.compile(r"(?:ATC|atc)[^\n]*(?:version|Version)[^\n]*", re.IGNORECASE)
-CANN_ROOT_PATTERN = re.compile(r"(?:ASCEND_HOME_PATH|ASCEND_TOOLKIT_HOME)=([^\n]*)")
-# Multi-pattern fallback for device identity key (tried in order)
-# Primary: /etc/machine-id (stable, always available on Linux)
-# Fallback: npu-smi output (format varies by version)
-DEVICE_ID_PATTERNS = [
-    # /etc/machine-id output — a standalone 32-char hex string on its own line
-    re.compile(r"(?:^|\n)([a-f0-9]{32})(?:\n|$)", re.IGNORECASE | re.MULTILINE),
-    re.compile(r"Machine[\s_]*(?:ID|Id)[\s:]*(\w+)", re.IGNORECASE),       # "Machine ID: ..."
-    # npu-smi board/chip info (format varies by version)
-    re.compile(r"Chip\s*Sn[\s:]*(\w+)", re.IGNORECASE),                    # "Chip Sn: 01234" / "ChipSn: 01234"
-    re.compile(r"Chip\s*Serial[\s:]*(\w+)", re.IGNORECASE),                # "Chip Serial: 01234"
-    re.compile(r"Serial\s*(?:Number|No\.?)[\s:]*(\w+)", re.IGNORECASE),   # "Serial Number: 01234"
-    re.compile(r"Board\s*(?:ID|Sn|Serial)[\s:]*(\w+)", re.IGNORECASE),     # "Board ID: 01234"
-    re.compile(r"Chip\s*ID[\s:]*(\w+)", re.IGNORECASE),                    # "Chip ID: 01234"
-    re.compile(r"Device\s*(?:SN|Serial)[\s:]*(\w+)", re.IGNORECASE),        # "Device SN: 01234"
-]
+NODE_PATTERN = re.compile(r"/dev/(?:davinci\d+|davinci_manager|devmm_svm|hisi_hdc)")
+OS_RELEASE_PATTERN = re.compile(r'^PRETTY_NAME="?([^"\n]+)"?', re.MULTILINE)
+KERNEL_PATTERN = re.compile(r"^Linux\s+.+", re.MULTILINE)
+ATC_VERSION_PATTERN = re.compile(
+    r"(?im)^(?P<value>(?:ATC|atc)[^\n]*(?:\s|:)(?:version|Version)\b[^\n]*)$"
+)
+DRIVER_VERSION_PATTERN = re.compile(r"(?im)^\s*Driver(?:\s+Version|_Version)\s*[:=]\s*([^\n]+)")
+FIRMWARE_VERSION_PATTERN = re.compile(r"(?im)^\s*Firmware(?:\s+Version|_Version)\s*[:=]\s*([^\n]+)")
+CANN_ROOT_PATTERN = re.compile(
+    r"(?m)^(?:ASCEND_HOME_PATH|ASCEND_HOME_REALPATH|ASCEND_TOOLKIT_HOME|ASCEND_TOOLKIT_REALPATH)=([^\n]*)"
+)
+LIB_PATTERN = re.compile(
+    r"(?P<path>/[^\s]*?(?:libascendcl|libacl_dvpp|libacl_op_compiler|libge_runner)\.so[^\s]*)"
+)
+HEADER_PATH_PATTERN = re.compile(r"(?P<path>/[^\s]*(?:acl|acl_rt|acl_mdl|acl_dvpp)\.h)\b")
 OM_PATTERN = re.compile(r"(?P<path>[^\s'\"()]+\.om)\b")
-AIPP_PATTERN = re.compile(r"(?P<path>[^\s'\"()]*aipp[^\s'\"()]*\.(?:cfg|conf|ini))\b", re.IGNORECASE)
-CONTEXT_HEADER_PATTERN = re.compile(r"^==\s*Device Context:\s*(?P<label>.+?)\s*==\s*$", re.IGNORECASE | re.MULTILINE)
+AIPP_PATTERN = re.compile(
+    r"(?P<path>[^\s'\"()]*aipp[^\s'\"()]*\.(?:cfg|conf|ini))\b", re.IGNORECASE
+)
+ATC_COMMAND_PATTERN = re.compile(r"(?im)^\s*atc\s+[^\n]*--model(?:=|\s)[^\n]*$")
+LINKAGE_LINE_PATTERN = re.compile(
+    r"(?m)^(?=[^\n]*(?:libascendcl|libacl_dvpp)\.so)(?=[^\n]*(?:=>|NEEDED|RUNPATH|RPATH))[^\n]*$"
+)
+SYMBOL_LINE_PATTERN = re.compile(
+    r"(?m)^(?:\s*\d+:)?[^\n]*(?:\bFUNC\b|\bGLOBAL\b|\bWEAK\b|\b[ABCDGIRSTVW]\b)[^\n]*\b"
+    r"(?P<name>acl(?:Init|Finalize|rt[A-Za-z0-9_]+|mdl[A-Za-z0-9_]+|dvpp[A-Za-z0-9_]+))\b[^\n]*$"
+)
+SAFE_FILENAME_PATTERN = re.compile(r"^[a-z0-9._-]+$")
 
 
 def load_text(path_arg):
@@ -64,286 +63,272 @@ def load_text(path_arg):
     return sys.stdin.read()
 
 
-def extract_machine_id(text):
-    """Extract device identity key from pasted evidence.
-    
-    Tries /etc/machine-id first (a 32-char hex string on its own line),
-    then falls back to npu-smi serial number patterns.
-    """
-    for pattern in DEVICE_ID_PATTERNS:
-        match = pattern.search(text)
-        if match:
-            return match.group(1).strip()
-    return "unknown"
-
-
-def choose_default_output_path(text):
-    """Extract machine_id from pasted evidence and return .agent/ascend-pro/context/{machine_id}.md."""
-    machine_id = extract_machine_id(text)
-    if machine_id == "unknown":
-        print("Warning: machine ID not found in evidence, using 'unknown' as filename.", file=sys.stderr)
-    return Path.cwd() / ".agent" / "ascend-pro" / "context" / f"{machine_id}.md"
-
-
-def first_match(pattern, text, group=1, default="unknown"):
-    match = pattern.search(text)
-    if not match:
-        return default
-    if isinstance(group, int) and match.lastindex is None and group != 0:
-        return match.group(0).strip()
-    if isinstance(group, str):
-        return match.group(group).strip()
-    return match.group(group).strip()
-
-
-def collect_unique(pattern, text, group=0):
-    seen = []
-    for match in pattern.finditer(text):
-        value = match.group(group).strip()
-        if value and value not in seen:
-            seen.append(value)
-    return seen
-
-
-def split_device_contexts(text):
-    matches = list(CONTEXT_HEADER_PATTERN.finditer(text))
-    contexts = []
-    for index, match in enumerate(matches):
-        start = match.end()
-        end = matches[index + 1].start() if index + 1 < len(matches) else len(text)
-        label = re.sub(r"\s+", " ", match.group("label")).strip()
-        block = text[start:end].strip()
-        if label and block:
-            contexts.append((label, block))
-    return contexts
-
-
-def detect_devices(text):
-    values = collect_unique(DEVICE_PATTERN, text, 1)
-    normalized = []
+def unique(values):
+    result = []
     for value in values:
-        compact = re.sub(r"\s+", " ", value).strip()
-        if compact.lower() not in [item.lower() for item in normalized]:
-            normalized.append(compact)
-    return normalized
-
-
-def detect_libraries(text):
-    result = {}
-    for name, pattern in LIB_PATTERNS.items():
-        matches = collect_unique(pattern, text, "path")
-        result[name] = matches or ["not found in pasted evidence"]
+        normalized = value.strip().rstrip(",;")
+        if normalized and normalized not in result:
+            result.append(normalized)
     return result
 
 
+def matches(pattern, text, group=0):
+    return unique(match.group(group) for match in pattern.finditer(text))
+
+
+def first(pattern, text, group=1, default="unknown"):
+    match = pattern.search(text)
+    return match.group(group).strip() if match else default
+
+
+def split_contexts(text):
+    headers = list(CONTEXT_HEADER_PATTERN.finditer(text))
+    if not headers:
+        return [("unlabeled evidence", text)]
+
+    contexts = []
+    for index, header in enumerate(headers):
+        end = headers[index + 1].start() if index + 1 < len(headers) else len(text)
+        block = text[header.start():end].strip()
+        contexts.append((re.sub(r"\s+", " ", header.group("label")).strip(), block))
+    return contexts
+
+
+def observed_devices(text):
+    evidence_lines = []
+    for line in text.splitlines():
+        if re.match(r"^==\s*Device Context:", line, re.IGNORECASE):
+            continue
+        if re.match(r"^\s*atc\s", line, re.IGNORECASE):
+            continue
+        if ".om" in line or "--soc_version" in line:
+            continue
+        evidence_lines.append(line)
+    normalized = []
+    for match in DEVICE_PATTERN.finditer("\n".join(evidence_lines)):
+        value = re.sub(r"\s+", " ", match.group(1)).strip()
+        compact = re.sub(r"[\s_-]+", "", value).lower()
+        if compact == "atlas200ia2":
+            value = "Atlas 200I A2"
+        elif compact.startswith("ascend"):
+            suffix = re.sub(r"(?i)^ascend\s*", "", value)
+            value = "Ascend" + re.sub(r"[\s_-]+", "", suffix)
+        if value not in normalized:
+            normalized.append(value)
+    return normalized
+
+
 def detect_symbols(text):
-    found = {}
-    for group, names in SYMBOL_GROUPS.items():
-        present = [name for name in names if re.search(rf"\b{re.escape(name)}\b", text)]
-        found[group] = present
-    return found
+    return unique(match.group("name") for match in SYMBOL_LINE_PATTERN.finditer(text))
 
 
-def detect_runtime_loading(text):
-    return "uses dlopen or RTLD patterns" if DL_PATTERN.search(text) else "no dynamic loading clues found"
+def context_fields(label, text):
+    cann_roots = matches(CANN_ROOT_PATTERN, text, 1)
+    libraries = matches(LIB_PATTERN, text, "path")
+    library_roots = unique(str(Path(path).parent) for path in libraries)
+    atc_version = first(ATC_VERSION_PATTERN, text, "value")
+    host_token = first(HOST_TOKEN_PATTERN, text)
+    serial_token = first(SERIAL_TOKEN_PATTERN, text)
+    device_index = first(DEVICE_INDEX_PATTERN, text)
+    deployment = first(DEPLOYMENT_PATTERN, text)
+    cann_material = "|".join(sorted([*cann_roots, *library_roots, atc_version]))
+    cann_fingerprint = "c-" + hashlib.sha256(cann_material.encode()).hexdigest()[:8]
+    identity_component = serial_token if serial_token != "unknown" else f"d-{device_index}"
+    context_id = f"{host_token}-{identity_component}-{deployment}-{cann_fingerprint}".lower()
+
+    return {
+        "label": label,
+        "host_token": host_token,
+        "serial_token": serial_token,
+        "device_index": device_index,
+        "deployment": deployment,
+        "context_id": context_id,
+        "collected": first(COLLECTED_PATTERN, text),
+        "devices": observed_devices(text),
+        "nodes": matches(NODE_PATTERN, text),
+        "kernel": first(KERNEL_PATTERN, text, 0),
+        "os_release": first(OS_RELEASE_PATTERN, text),
+        "driver_version": first(DRIVER_VERSION_PATTERN, text),
+        "firmware_version": first(FIRMWARE_VERSION_PATTERN, text),
+        "cann_roots": cann_roots,
+        "atc_version": atc_version,
+        "libraries": libraries,
+        "library_roots": library_roots,
+        "headers": matches(HEADER_PATH_PATTERN, text, "path"),
+        "symbols": detect_symbols(text),
+        "linkage": matches(LINKAGE_LINE_PATTERN, text),
+        "om_files": matches(OM_PATTERN, text, "path"),
+        "aipp_files": matches(AIPP_PATTERN, text, "path"),
+        "atc_commands": matches(ATC_COMMAND_PATTERN, text),
+    }
 
 
-def detect_library_roots(text):
-    roots = collect_unique(LIBROOT_PATTERN, text)
-    roots.extend(path for path in collect_unique(SDK_PATH_PATTERN, text) if "/lib" in path.lower())
-    return roots[:8]
-
-
-def detect_header_roots(text):
-    roots = collect_unique(HEADER_PATTERN, text)
-    roots.extend(path for path in collect_unique(SDK_PATH_PATTERN, text) if "/include" in path.lower())
-    return roots[:8]
-
-
-def summarize_list(values):
+def summary(values):
     return ", ".join(values) if values else "unknown"
 
 
-def summarize_context(label, text):
-    libraries = detect_libraries(text)
-    symbols = detect_symbols(text)
-    devices = detect_devices(text)
-    nodes = collect_unique(NODE_PATTERN, text)
-    cann_roots = collect_unique(CANN_ROOT_PATTERN, text, 1)
-    om_files = collect_unique(OM_PATTERN, text, "path")[:10]
-    aipp_files = collect_unique(AIPP_PATTERN, text, "path")[:10]
+def risks_for(fields):
+    risks = []
+    if fields["host_token"] == "unknown":
+        risks.append("Safe host token is missing; collect sanitized identity evidence.")
+    if fields["device_index"] == "unknown":
+        risks.append("Selected device index is missing.")
+    if fields["deployment"] == "unknown":
+        risks.append("Host/container deployment boundary is missing.")
+    if not fields["devices"]:
+        risks.append("Device model was not observed in runtime evidence.")
+    if not fields["nodes"]:
+        risks.append("Ascend device nodes were not observed.")
+    if fields["driver_version"] == "unknown":
+        risks.append("Driver version was not observed.")
+    if fields["firmware_version"] == "unknown":
+        risks.append("Firmware version was not observed.")
+    if not fields["cann_roots"]:
+        risks.append("CANN root was not observed.")
+    if fields["atc_version"] == "unknown":
+        risks.append("ATC version was not observed; required only for conversion work.")
+    if not fields["libraries"]:
+        risks.append("No Ascend runtime library path was observed.")
+    if not fields["linkage"]:
+        risks.append("Actual target linkage or dlopen resolution was not proved.")
+    if not fields["symbols"]:
+        risks.append("No exported Ascend symbols were observed from deployed libraries.")
+    if not fields["om_files"]:
+        risks.append("OM artifact provenance is unknown; required only for model/runtime work.")
+    return risks
 
-    return [
-        f"### {label}",
-        f"- Device model candidates: {summarize_list(devices)}",
-        f"- Device nodes: {summarize_list(nodes)}",
-        f"- CANN roots: {summarize_list(cann_roots)}",
-        f"- libascendcl: {summarize_list(libraries['libascendcl'])}",
-        f"- libacl_dvpp: {summarize_list(libraries['libacl_dvpp'])}",
-        f"- Header roots: {summarize_list(detect_header_roots(text))}",
-        f"- Library roots: {summarize_list(detect_library_roots(text))}",
-        f"- Runtime loading behavior: {detect_runtime_loading(text)}",
-        f"- ACL runtime symbols present: {summarize_list(symbols['runtime'])}",
-        f"- ACL model symbols present: {summarize_list(symbols['model'])}",
-        f"- DVPP symbols present: {summarize_list(symbols['dvpp'])}",
-        f"- OM files: {summarize_list(om_files)}",
-        f"- AIPP config files: {summarize_list(aipp_files)}",
-    ]
 
-
-def build_baseline(text):
-    libraries = detect_libraries(text)
-    symbols = detect_symbols(text)
-    devices = detect_devices(text)
-    nodes = collect_unique(NODE_PATTERN, text)
-    sdk_paths = collect_unique(SDK_PATH_PATTERN, text)[:10]
-    cann_roots = collect_unique(CANN_ROOT_PATTERN, text, 1)
-    om_files = collect_unique(OM_PATTERN, text, "path")[:10]
-    aipp_files = collect_unique(AIPP_PATTERN, text, "path")[:10]
-    context_blocks = split_device_contexts(text)
-
-    kernel = first_match(KERNEL_PATTERN, text)
-    os_release = first_match(OS_RELEASE_PATTERN, text)
-    atc_version = first_match(ATC_PATTERN, text, 0)
-    machine_id = extract_machine_id(text)
-
-    open_risks = []
-    if machine_id == "unknown":
-        open_risks.append("Machine ID not found. Run 'cat /etc/machine-id' on the target device and include the output.")
-    else:
-        # Ensure machine_id is clean (first line, lowercase, 32 hex chars)
-        machine_id = machine_id.split()[0].lower() if machine_id != "unknown" else "unknown"
-    if not devices:
-        open_risks.append("Device model not identified from pasted evidence.")
-    if kernel == "unknown":
-        open_risks.append("Kernel version not identified.")
-    if not nodes:
-        open_risks.append("Ascend device nodes were not observed.")
-    if not cann_roots:
-        open_risks.append("CANN root environment variables were not observed.")
-    if any("not found" in item for item in libraries["libascendcl"]):
-        open_risks.append("No libascendcl path found in pasted evidence.")
-    if not symbols["runtime"]:
-        open_risks.append("Required ACL runtime symbols were not observed in pasted symbol dumps.")
-    if not symbols["model"]:
-        open_risks.append("Required ACL model symbols were not observed in pasted symbol dumps.")
-    if not om_files:
-        open_risks.append("No OM model artifact was observed; conversion provenance remains unknown.")
-    if len(devices) > 1 and not context_blocks:
-        open_risks.append("Multiple device models were observed without labeled Device Context blocks; do not merge their .so, header, symbol, or OM facts.")
-
+def render_context(fields):
     lines = [
-        "Project baseline",
+        f"## Candidate Context: {fields['label']}",
         "",
-        "Active device context",
-        "- Active context ID: not selected",
-        "- Rule: select one device-scoped context before implementation unless the task is explicitly multi-device support.",
-        "- Aggregated discovery sections below are not implementation context when multiple devices or CANN roots exist; use the device-scoped runtime context section.",
+        "### Identity",
+        f"- Candidate context ID: `{fields['context_id']}`",
+        f"- Safe host token: `{fields['host_token']}`",
+        f"- NPU serial token: `{fields['serial_token']}`",
+        f"- Selected device index: `{fields['device_index']}`",
+        f"- Deployment: `{fields['deployment']}`",
+        f"- Collected: {fields['collected']}",
+        f"- Observed device candidates: {summary(fields['devices'])}",
+        f"- Device nodes: {summary(fields['nodes'])}",
         "",
-        "Device baseline",
-        f"- Machine ID: {machine_id}  (from /etc/machine-id; context key)",
-        f"- Device model candidates: {summarize_list(devices)}",
-        f"- Device nodes: {summarize_list(nodes)}",
+        "### System And Runtime",
+        f"- Kernel: {fields['kernel']}",
+        f"- OS: {fields['os_release']}",
+        f"- Driver version: {fields['driver_version']}",
+        f"- Firmware version: {fields['firmware_version']}",
+        f"- CANN roots: {summary(fields['cann_roots'])}",
+        f"- ATC version: {fields['atc_version']}",
+        f"- Runtime libraries discovered: {summary(fields['libraries'])}",
+        f"- Library roots: {summary(fields['library_roots'])}",
+        f"- Header paths: {summary(fields['headers'])}",
+        f"- Linkage evidence: {summary(fields['linkage'])}",
+        f"- Exported Ascend symbols observed: {summary(fields['symbols'])}",
         "",
-        "Kernel and OS baseline",
-        f"- Kernel: {kernel}",
-        f"- OS release: {os_release}",
-        "- Driver and firmware: unknown unless explicitly shown by npu-smi output",
+        "### Model Artifacts",
+        f"- OM files: {summary(fields['om_files'])}",
+        f"- AIPP files: {summary(fields['aipp_files'])}",
+        f"- ATC commands: {summary(fields['atc_commands'])}",
         "",
-        "CANN and tool baseline",
-        f"- CANN roots: {summarize_list(cann_roots)}",
-        f"- ATC version: {atc_version}",
-        "- CANN package provenance: unknown from pasted evidence",
-        "",
-        "Userspace library sightings",
-        f"- libascendcl: {summarize_list(libraries['libascendcl'])}",
-        f"- libacl_dvpp: {summarize_list(libraries['libacl_dvpp'])}",
-        f"- libacl_op_compiler: {summarize_list(libraries['libacl_op_compiler'])}",
-        f"- libge_runner: {summarize_list(libraries['libge_runner'])}",
-        "- Which copy the project actually uses: unknown from pasted evidence",
-        "- Rule: treat these as discovery sightings only until tied to one device-scoped context.",
-        "",
-        "ABI and symbol baseline",
-        f"- ACL runtime symbols present: {summarize_list(symbols['runtime'])}",
-        f"- ACL memory symbols present: {summarize_list(symbols['memory'])}",
-        f"- ACL model symbols present: {summarize_list(symbols['model'])}",
-        f"- DVPP symbols present: {summarize_list(symbols['dvpp'])}",
-        "- Any symbol mismatches: unknown; inspect absent symbols against intended integration",
-        "",
-        "Project link and include baseline",
-        f"- Header roots: {summarize_list(detect_header_roots(text))}",
-        f"- Library roots: {summarize_list(detect_library_roots(text))}",
-        f"- Bundled or mounted Ascend SDK paths: {summarize_list(sdk_paths)}",
-        f"- Runtime loading behavior: {detect_runtime_loading(text)}",
-        "",
-        "Model artifact baseline",
-        f"- OM files: {summarize_list(om_files)}",
-        f"- AIPP config files: {summarize_list(aipp_files)}",
-        "- Conversion command and logs: unknown unless explicitly included",
-        "",
-        "Device-scoped runtime contexts",
+        "### Open Risks",
     ]
+    risks = risks_for(fields)
+    lines.extend(f"- [ ] {risk}" for risk in risks)
+    if not risks:
+        lines.append("- [ ] No parser-detected gaps; manual review is still required.")
+    return lines
 
-    if context_blocks:
-        for label, block in context_blocks:
-            lines.extend(summarize_context(label, block))
-            lines.append("")
-        lines.extend([
-            "Context passing rule",
-            "- Pass only the selected device context block to future agents or turns by default.",
-            "- Mention other context IDs separately; do not merge their `.so`, headers, symbols, or OM artifacts.",
-            "",
-        ])
-    else:
-        lines.extend([
-            "- No labeled `== Device Context: ... ==` blocks found.",
-            "- If this evidence covers more than one device model, ask the user to relabel the paste before using library or model facts.",
-            "",
-        ])
 
+def build_draft(text):
+    contexts = [context_fields(label, block) for label, block in split_contexts(text)]
+    lines = [
+        "# Generated Ascend Runtime Context Draft",
+        "",
+        "> Generated from sanitized evidence. This is not an authoritative context and must not be",
+        "> copied over a reviewed file without manual verification.",
+        "",
+    ]
+    for fields in contexts:
+        lines.extend(render_context(fields))
+        lines.append("")
     lines.extend([
-        "Open risks",
+        "## Review Gate",
+        "",
+        "- [ ] Parser false positives removed.",
+        "- [ ] One active runtime context selected.",
+        "- [ ] Driver, firmware, loaded libraries, headers, linkage, and OM provenance verified as needed.",
+        "- [ ] Device/CANN-specific rules cite their source and verification date.",
+        "- [ ] Verified facts transferred deliberately into a reviewed context file.",
     ])
+    return "\n".join(lines) + "\n", contexts
 
-    if open_risks:
-        lines.extend(f"- {risk}" for risk in open_risks)
-    else:
-        lines.append("- No obvious gaps detected in pasted evidence; still verify project-specific API usage.")
 
-    return "\n".join(lines)
+def validate_sanitized_input(text):
+    if RAW_MACHINE_ID_PATTERN.search(text):
+        raise ValueError("Raw machine ID detected. Run sanitize-ascend-evidence.py before rendering.")
+
+
+def default_draft_path(context):
+    context_id = context["context_id"]
+    if "unknown" in context_id or not SAFE_FILENAME_PATTERN.fullmatch(context_id):
+        raise ValueError("Cannot derive a safe context ID; host token, device index, and deployment are required.")
+    return Path.cwd() / ".agent" / "ascend-pro" / "drafts" / f"{context_id}.generated.md"
+
+
+def write_output(path, draft, force):
+    resolved_path = path.resolve(strict=False)
+    parts = resolved_path.parts
+    reviewed_path = (".agent", "ascend-pro", "context")
+    if any(tuple(parts[index:index + 3]) == reviewed_path for index in range(len(parts) - 2)):
+        raise ValueError("Refusing to write generated output into the reviewed context directory.")
+
+    if path.is_symlink():
+        raise ValueError(f"Refusing to write through a symbolic link: {path}")
+    if not resolved_path.name.endswith(".generated.md"):
+        raise ValueError("Generated output filename must end with .generated.md.")
+
+    if path.exists() and not force:
+        raise ValueError(f"Output exists: {path}. Pass --force only to replace a generated draft.")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(draft, encoding="utf-8")
+    path.chmod(0o600)
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Render an Ascend project baseline from pasted device evidence.")
-    parser.add_argument("input", nargs="?", help="Optional text file containing pasted device evidence. Reads stdin if omitted.")
-    parser.add_argument("-o", "--output", help="Optional markdown output file path.")
-    parser.add_argument("--write-default", action="store_true", help="Auto-detect machine_id from /etc/machine-id (or npu-smi fallback) and write to .agent/ascend-pro/context/{machine_id}.md.")
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("input", nargs="?", help="Sanitized evidence file; reads stdin when omitted.")
+    output_group = parser.add_mutually_exclusive_group()
+    output_group.add_argument("-o", "--output", help="Explicit path ending in .generated.md.")
+    output_group.add_argument("--write-draft", action="store_true", help="Write under .agent/ascend-pro/drafts/.")
+    parser.add_argument("--force", action="store_true", help="Replace an existing generated draft.")
     args = parser.parse_args()
 
-    text = load_text(args.input)
-    if not text.strip():
-        print("No input provided. Pass a file path or pipe pasted device evidence on stdin.", file=sys.stderr)
-        return 1
+    try:
+        text = load_text(args.input)
+        if not text.strip():
+            raise ValueError("No input provided.")
+        if args.force and not (args.output or args.write_draft):
+            raise ValueError("--force requires --output or --write-draft.")
+        validate_sanitized_input(text)
+        draft, contexts = build_draft(text)
 
-    baseline = build_baseline(text)
-    if args.output and args.write_default:
-        print("Use either --output or --write-default, not both.", file=sys.stderr)
-        return 1
+        output_path = None
+        if args.output:
+            output_path = Path(args.output)
+        elif args.write_draft:
+            if len(contexts) != 1:
+                raise ValueError("--write-draft requires exactly one labeled context per input file.")
+            output_path = default_draft_path(contexts[0])
 
-    output_path = None
-    if args.output:
-        output_path = Path(args.output)
-    elif args.write_default:
-        output_path = choose_default_output_path(text)
-
-    if output_path is not None:
-        output_path.parent.mkdir(parents=True, exist_ok=True)
-        output_path.write_text(baseline + "\n", encoding="utf-8")
-        print(f"Wrote baseline to {output_path}")
+        if output_path:
+            write_output(output_path, draft, args.force)
+            print(f"Wrote generated draft to {output_path}")
+        else:
+            sys.stdout.write(draft)
         return 0
-
-    print(baseline)
-    return 0
+    except (OSError, ValueError) as error:
+        print(f"error: {error}", file=sys.stderr)
+        return 1
 
 
 if __name__ == "__main__":

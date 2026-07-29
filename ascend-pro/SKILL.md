@@ -1,404 +1,113 @@
 ---
 name: ascend-pro
 description: >
-  Expert on Huawei Ascend inference and media pipelines — PyTorch/TF → ONNX conversion, ONNX-to-OM
-  via ATC, zero-copy buffer flow, inference optimization, AscendCL/DVPP/AIPP API usage, device-environment
-  baselining, and memory alignment. Use this skill whenever the user mentions Ascend, Atlas, CANN, ATC,
-  AscendCL, DVPP, AIPP, OM model, NPU, model conversion, or Ascend inference pipelines. It replaces
-  the old ascend-performance skill with broader scope.
+  Load when a task targets Huawei Ascend or Atlas hardware and involves CANN, ATC/OM conversion,
+  AscendCL/ACL, DVPP, AIPP, NPU inference, profiling, device memory, or runtime compatibility.
+  Do not use for generic ONNX or NPU questions, Rockchip/RKNN, CUDA/TensorRT, or OpenVINO unless
+  Huawei Ascend is also an explicit deployment target.
 ---
 
-# ascend-pro
+# Ascend Pro
 
-Build or tune Ascend inference and media pipelines on Atlas devices. Covers: model conversion
-(PyTorch/TF → ONNX → OM via ATC), runtime inference (AscendCL), media processing (DVPP, AIPP),
-zero-copy analysis, and device-environment baselining.
+Build, diagnose, review, and optimize Huawei Ascend inference and media pipelines. Prefer the
+project's existing language, logging, build, and error-handling conventions. Use C/C++ for product
+runtime when the repository does; use Python for conversion, validation, inspection, and profiling.
 
-Prefer C/C++ for product runtime; use Python for model conversion checks, env inspection, profiling.
+## Route First
 
-## Workflow
+Identify the task before requesting device evidence. Read only the references on the selected route.
 
-1. **Initialize project context** — collect device evidence + generate `.agent/ascend-pro/context/{machine_id}.md` (see [context.md format](#contextmd-document-format)).
-2. **Identify the user's stage:**
-   - **Model conversion** → route to [onnx-to-om.md](references/onnx-to-om.md) (PT/TF→ONNX→OM).
-   - **Inference pipeline** → route to [zero-copy-inference.md](references/zero-copy-inference.md).
-   - **API query** → route to [acl-api-reference.md](references/acl-api-reference.md) or [dvpp-api-reference.md](references/dvpp-api-reference.md).
-3. **For pipeline work**: draw data path → prefer device-resident handoff → prove copies → tune one bottleneck.
+| Task | Required reads | Evidence gate | Verification |
+|---|---|---|---|
+| Skill maintenance or meta-review | [skill-evals.md](references/skill-evals.md) | None | Run the skill validation commands in that file |
+| General explanation or static code review | Relevant API reference below | None | Separate source facts from device assumptions |
+| PyTorch/TF export to ONNX for an Ascend target | [onnx-to-om.md](references/onnx-to-om.md) | Model inputs and intended ATC target | Validate ONNX with its checker and reference runtime |
+| ONNX to OM or AIPP configuration | [onnx-to-om.md](references/onnx-to-om.md), [aipp-config-reference.md](references/aipp-config-reference.md), [version-audit.md](references/version-audit.md) | Target SoC and installed ATC/CANN version | Preserve the exact command and compare accuracy |
+| AscendCL API or model execution | [acl-api-reference.md](references/acl-api-reference.md), [ascend-deployment.md](references/ascend-deployment.md) | CANN version for code changes | Build against selected headers and verify deployed symbols |
+| DVPP, VDEC/VENC, VPC, or media preprocessing | [dvpp-api-reference.md](references/dvpp-api-reference.md), [memory-alignment.md](references/memory-alignment.md), [acl-dvpp-pipeline.md](references/acl-dvpp-pipeline.md) | Device model, CANN version, formats, dimensions, and strides | Recalculate sizes and test on the target |
+| Zero-copy or async inference design | [zero-copy-inference.md](references/zero-copy-inference.md), [acl-dvpp-pipeline.md](references/acl-dvpp-pipeline.md), [debug-logging.md](references/debug-logging.md) | Active runtime context and complete buffer path | Account for every owner, memory domain, copy, and sync |
+| Performance regression or low utilization | [perf-debugging.md](references/perf-debugging.md), [debug-logging.md](references/debug-logging.md), [version-audit.md](references/version-audit.md) | Reviewed baseline plus stage timings | Change one bottleneck and compare the same workload |
+| Runtime failure, environment mismatch, or unfamiliar project | [project-onboarding-workflow.md](references/project-onboarding-workflow.md), [device-evidence-workflow.md](references/device-evidence-workflow.md), [platform-matrix.md](references/platform-matrix.md) | Full reviewed baseline | Reproduce in exactly one selected context |
+| Multi-device or host/container deployment | [device-scoped-context.md](references/device-scoped-context.md), [baseline-file-convention.md](references/baseline-file-convention.md) | One context per runtime target | Test every supported context independently |
+| Other Ascend work | [platform-matrix.md](references/platform-matrix.md) | Determine from the nearest route | State the chosen route and remaining unknowns |
 
-## Session Start: Device Identity Verification
+## Evidence Gates
 
-**Every session** must verify the current device's serial number before using any cached context.
+Use the lowest gate that can support the requested conclusion.
 
-### Step 1 — Get device machine-id
+### Gate 0: No device baseline
 
-Ask the user to run this command on the target device:
+Use for skill maintenance, conceptual explanations, source-only review, and framework-to-ONNX work
+that does not choose ATC flags. Do not block these tasks on device access.
 
-```bash
-cat /etc/machine-id
-```
+### Gate 1: Target facts
 
-The user pastes back the output (a 32-character hex string). This is used as the device
-context key — it is stable, unique per machine, and available on all Linux systems including
-containers (where it inherits the host's ID).
+Use for API selection, ATC flags, AIPP, and device-sensitive design. Confirm the device model, CANN
+or ATC version, host/container boundary, input contract, and relevant installed headers. If unavailable,
+continue only where the result is version-independent and label the rest as provisional.
 
-> 💡 `/etc/machine-id` is preferred over `npu-smi` because it works regardless of driver
-> version, container permissions, or NPU model. The machine-id is the device identity key;
-> NPU-specific details (chip model, CANN version) are captured in the context file itself.
+### Gate 2: Reviewed runtime context
 
-If `/etc/machine-id` is unavailable (unusual), fall back to:
-```bash
-cat /var/lib/dbus/machine-id 2>/dev/null || echo "unknown"
-```
+Use before device-specific implementation, deployment changes, runtime diagnosis, or performance claims.
+Follow [device-evidence-workflow.md](references/device-evidence-workflow.md) and review the generated draft
+with [baseline-review-checklist.md](references/baseline-review-checklist.md). A cached context is reusable
+only after its identity and version fingerprint are revalidated. File existence alone proves nothing.
 
-### Step 2 — Look up device context by machine-id
+Never request or store raw `/etc/machine-id`. It is a host identifier and may be confidential. The helper
+scripts emit an application-specific context token and redact common identifiers. Ask the user to inspect
+the bundle before sharing it.
 
-Check for `.agent/ascend-pro/context/{machine_id}.md`:
+## Runtime Context Rules
 
-| Result | Action |
-|---|---|
-| **File exists** | Cached context is valid (machine-id guarantees match). Read and proceed. |
-| **File missing** | Run [Full Initialization](#full-initialization-agentascend-procontextmachine_idmd) below for this device. |
+A runtime context includes: pseudonymous host token, NPU identity or selected device index, device model,
+driver/firmware, CANN root and version, loaded libraries, headers, host/container boundary, and OM
+artifact provenance.
 
-> ⚠️ The machine-id uniquely identifies a physical machine. Even if the device model is the
-> same (both are Ascend310P), different machines may have different drivers, firmware, or
-> CANN configurations. Always start with the machine-id.
+- Select exactly one active context before context-dependent code changes.
+- Do not mix headers, `.so` files, symbols, AIPP settings, OM artifacts, or measurements across contexts.
+- Treat a card replacement, device-index change, CANN/driver update, container image change, or regenerated
+  OM as a context change that requires revalidation.
+- Store generated drafts separately from reviewed context. Never silently overwrite reviewed notes.
+- Use [context-template.md](references/context-template.md) for reviewed context files.
 
-When the file exists, read `.agent/ascend-pro/context/{machine_id}.md` to restore project context.
+## Documentation Evidence
 
-### Full Initialization: `.agent/ascend-pro/context/{machine_id}.md`
+Ascend APIs and constraints vary by device and CANN release. Use this precedence:
 
-When no valid context exists for the current device, generate one:
+1. Headers, shared-object symbols, tool help, and documentation installed with the selected runtime.
+2. Official Huawei documentation for the exact CANN/device version.
+3. This skill's references as working guidance, never as proof of a device-specific numeric limit.
 
-```
-.agent/ascend-pro/context/{machine_id}.md
-```
+If `ctx_search` and the indexed `ascend-*` sources are available, use them. Otherwise inspect the local
+CANN installation or search official Huawei sources. If none is available, mark the claim unverified.
+Record the source, CANN version, device family, and verification date for alignment or capability facts.
 
-This file combines **device baseline + API context** in a well-archived format (see [context.md format](#contextmd-document-format)) so every session starts with the same facts.
+## Pipeline Procedure
 
-### How to generate it
+For implementation or optimization work:
 
-**Step 1 — Collect device evidence**
+1. State the active context and input/output contract.
+2. Draw `source -> decode -> preprocess -> model input -> inference -> output -> postprocess`.
+3. Annotate every hop with owner, memory domain, format, dimensions, stride, allocation API, copy, and sync.
+4. Prefer device-resident handoff when the selected APIs support it; prove rather than assume zero-copy.
+5. Reuse stable buffer pools; treat per-frame allocation, repeated `aclrtMemcpy`, CPU conversion, full
+   output readback, and eager stream synchronization as suspects.
+6. Integrate diagnostics through the project's existing logging and error-handling system. Use
+   [debug-logging.md](references/debug-logging.md) as an adapter pattern, not a mandatory dependency.
+7. Measure stage latency with a fixed workload, change one bottleneck, and repeat the same measurement.
 
-If the user has device access:
-```bash
-# Run on target device
-bash scripts/detect-ascend-env.sh      # device model, NPU, kernel, CANN paths
-bash scripts/collect-ascend-debug.sh   # .so, symbols, headers, linkages
-cat /etc/machine-id                     # device context key
-npu-smi info                            # NPU info
-```
-If no direct access: give the user the command checklist from [first-response-template.md](references/first-response-template.md) and ask them to paste output.
+## Known Gotchas
 
-> ⚠️ **Machine ID is mandatory.** Used as the device context key (`machine_id`).
-
-**Step 2 — Build baseline**
-
-Use `--write-default` to auto-detect machine_id and write to the correct path:
-```bash
-python3 scripts/render-project-baseline.py pasted-evidence.txt --write-default
-```
-
-Or specify the path explicitly (substitute actual machine_id):
-```bash
-mkdir -p .agent/ascend-pro/context
-python3 scripts/render-project-baseline.py pasted-evidence.txt -o .agent/ascend-pro/context/abc123def4567890abc123def4567890.md
-```
-
-This parses device evidence (including `machine_id`) and emits a structured baseline section.
-
-> 💡 With `--write-default`, the script auto-detects `machine_id` from the pasted evidence (from `/etc/machine-id` or as a fallback from npu-smi) and writes to `.agent/ascend-pro/context/{machine_id}.md`.
-
-**Step 3 — Append API context**
-
-After the baseline, append a section with:
-- The key API signatures from [acl-api-reference.md](references/acl-api-reference.md) that match the project's usage.
-- Memory alignment rules from [memory-alignment.md](references/memory-alignment.md) (stride alignment, buffer size formulas).
-- Any active AIPP config or conversion notes from current project.
-- A pointer to `ctx_search(source: "ascend-...")` for deeper official docs.
-
-**Step 4 — Set context ID**
-- Context ID format: `{machine_id}-{device_model}-{host_or_container}-{purpose}`.
-  Example: `abc123def456-Ascend310P-host-video-infer`
-- Review the baseline with [baseline-review-checklist.md](references/baseline-review-checklist.md).
-- If multiple devices, each gets its own file under `.agent/ascend-pro/context/`. Select one active context before coding.
-- The `.agent/ascend-pro/context/{machine_id}.md` file is then the canonical project context for all future turns.
-
-### When to regenerate
-- New device evidence is collected (different hardware, CANN update).
-- Project switches deployment target.
-- Onboarding a new team member or fresh agent session.
-- To regenerate, simply re-run the [How to generate it](#how-to-generate-it) steps — the output path is already determined by machine_id.
-
-### context.md Document Format
-
-Each device context file is stored at `.agent/ascend-pro/context/{machine_id}.md`, keyed by the machine ID
-(from `/etc/machine-id`). This allows multiple machines to coexist — every physical machine gets its own
-file. The format is consistent and well-archived so it can be reliably parsed by both human readers and
-future agent sessions.
-
-```markdown
-# Ascend Device Context — {machine_id}
-
-**File**: `.agent/ascend-pro/context/{machine_id}.md`
-
----
-## Context Metadata
-
-Identification and provenance for this context document.
-
-- **Context ID**: `{machine_id}-{device_model}-{host_or_container}-{purpose}`
-  - Example: `abc123def4567890abc123def4567890-Ascend310P-host-video-infer`
-- **Machine ID**: `abc123def4567890abc123def4567890`  *(from `/etc/machine-id` — filename basis)*
-- **Device Model**: Ascend310P / Atlas 200I A2 / ...
-- **Deployment**: host | container | docker
-- **Purpose**: video-infer | model-conversion | benchmark | ...
-- **CANN Version**: x.x.x
-- **Driver Version**: x.x.x
-- **Firmware Version**: x.x.x
-- **Created**: YYYY-MM-DD
-- **Last Verified**: YYYY-MM-DD
-- **Verification Checklist**: [baseline-review-checklist.md](../references/baseline-review-checklist.md)
-
----
-## Device Baseline
-
-### Chip Identity
-- serial number, model, device nodes (`/dev/davinci*`)
-
-### Kernel and OS
-- kernel version, OS release
-
-### CANN and Tools
-- `ASCEND_HOME_PATH`, `ASCEND_TOOLKIT_HOME`
-- `atc --version`, `npu-smi info`
-
-### Userspace Libraries
-- Paths to `libascendcl.so`, `libacl_dvpp.so`, `libacl_op_compiler.so`, `libge_runner.so`
-- Which copy the project actually uses (linkage evidence)
-
-### ABI and Symbols
-- ACL runtime, memory, model, DVPP symbol presence
-- Any symbol mismatches vs. intended integration
-
-### Project Build Configuration
-- Header roots (`-I` / `include_directories`)
-- Library roots (`-L` / `link_directories`)
-- SDK paths, dlopen usage
-
-### Model Artifacts
-- OM files (path, provenance, conversion command)
-- AIPP config files
-- Dynamic shape / precision settings
-
----
-## API Context
-
-Key AscendCL API signatures relevant to the project, extracted from [acl-api-reference.md](../references/acl-api-reference.md):
-
-| API | Signature | Notes |
-|---|---|---|
-| aclrtMalloc | `aclError aclrtMalloc(void **devPtr, size_t size, aclrtMemMallocPolicy policy)` | 64-byte alignment |
-| ... | ... | ... |
-
-Key DVPP API signatures from [dvpp-api-reference.md](../references/dvpp-api-reference.md):
-
-| API | Operation | Alignment Constraints |
-|---|---|---|
-| acldvppVpcResizeAsync | resize | W: 16-align, H: 2-align |
-| ... | ... | ... |
-
----
-## Memory Alignment Rules
-
-From [memory-alignment.md](../references/memory-alignment.md). Critical for buffer allocation:
-
-| Operation | Width Align | Height Align | Stride Formula | Buffer Size Formula |
-|---|---|---|---|---|
-| VPC resize | 16 | 2 | `align(width, 16)` | ... |
-| JPEG decode (YUV) | 16 | 1 | ... | ... |
-| Model input | varies | varies | ... | ... |
-
-> ⚠️ Always recalculate buffer sizes from actual resolution, device constraints, and operation type.
-
----
-## AIPP Configuration
-
-- **Mode**: static | dynamic
-- **Config file** (for static): `path/to/aipp.cfg`
-- **CSC matrix**: RGB→BGR / YUV→RGB / ...
-- **Mean / Std**: `mean_chn_0: 128 mean_chn_1: 128 mean_chn_2: 128`
-- **Crop**: `crop_size_w: 224 crop_size_h: 224`
-- **Dynamic AIPP params** (if applicable): rotation, padding
-
----
-## Conversion Notes
-
-- **Source framework**: PyTorch | TensorFlow | ...
-- **ONNX export opset**: 15 / 17 / ...
-- **ATC command**: `atc --model=model.onnx --framework=5 --output=model --soc_version=Ascend310P3 ...`
-- **Dynamic shape** (if any): `--input_shape_range="images:[1,3,224,224-640]"`
-- **Precision**: FP16 | INT8 | mixed
-
----
-## Device-Scoped Runtime Contexts
-
-When multiple devices exist (e.g., container + host), maintain one section per context:
-
-### Host (Ascend310P)
-```
-- Context ID: abc123def4567890abc123def4567890-Ascend310P-host-video-infer
-- CANN root: /usr/local/Ascend/ascend-toolkit/latest
-- libascendcl: /usr/local/Ascend/ascend-toolkit/latest/lib64/libascendcl.so
-...
-```
-
-### Container (Atlas 200I A2)
-```
-- Context ID: fedcba0987654321fedcba0987654321-Atlas200I_A2-container-api-serve
-- CANN root: /usr/local/Ascend/ascend-toolkit/latest
-...
-```
-
-> ⚠️ **Do not merge** .so, headers, symbols, or OM artifacts across contexts. Select one active context before coding.
-
----
-## Verification History
-
-| Date | Check | Result |
-|---|---|---|
-| YYYY-MM-DD | Baseline reviewed per [baseline-review-checklist.md](../references/baseline-review-checklist.md) | ✅ Pass |
-| YYYY-MM-DD | API context verified against project source | ✅ Pass |
-| YYYY-MM-DD | Memory alignment rules match project operations | ✅ Pass |
-
----
-## Open Risks
-
-- [ ] Machine ID not yet obtained (run `cat /etc/machine-id`)
-- [ ] Missing DVPP symbol: `acldvppJpegDecodeAsync`
-- [ ] No AIPP config for current model
-
----
-*This document is auto-generated by the ascend-pro skill. Update it when device evidence, CANN version, or project scope changes.*
-```
-
-The render script (`render-project-baseline.py`) generates the **Device Baseline** section. The remaining sections are appended manually following the instructions in [How to generate it](#how-to-generate-it).
-
-## Start Here (quick helpers)
-
-- `scripts/detect-ascend-env.sh`
-- `scripts/collect-ascend-debug.sh`
-- `scripts/render-project-baseline.py`
-
-## References
-
-### Device & environment (carried forward from ascend-performance)
-
-| File | When to read |
-|---|---|
-| [platform-matrix.md](references/platform-matrix.md) | Device families, CANN surfaces, what to confirm |
-| [device-scoped-context.md](references/device-scoped-context.md) | Multiple device models, containers, or CANN installs |
-| [version-audit.md](references/version-audit.md) | CANN version compatibility checks |
-| [project-onboarding-workflow.md](references/project-onboarding-workflow.md) | Unfamiliar project onboarding |
-| [device-evidence-workflow.md](references/device-evidence-workflow.md) | Collecting device info from user |
-| [first-response-template.md](references/first-response-template.md) | First reply when no device baseline exists |
-| [device-command-checklist.md](references/device-command-checklist.md) | Exact commands for user to run on device |
-| [baseline-review-checklist.md](references/baseline-review-checklist.md) | Reviewing baseline draft output |
-| [baseline-file-convention.md](references/baseline-file-convention.md) | Storing baseline in project |
-| [acl-dvpp-pipeline.md](references/acl-dvpp-pipeline.md) | Camera, decode, DVPP, AIPP, memory flow, stream sync |
-| [ascend-deployment.md](references/ascend-deployment.md) | ATC, OM artifacts, ACL model loading, deployment |
-| [perf-debugging.md](references/perf-debugging.md) | Throughput, CPU/NPU load, hidden copies, sync waits |
-
-### New references for ascend-pro
-
-| File | When to read |
-|---|---|
-| [onnx-to-om.md](references/onnx-to-om.md) | Model conversion — PyTorch→ONNX, TF→ONNX, ONNX→OM via ATC, dynamic shape, precision tuning |
-| [zero-copy-inference.md](references/zero-copy-inference.md) | Zero-copy buffer flow, anti-patterns, async pipeline design, copy verification |
-| [debug-logging.md](references/debug-logging.md) | **Must read during development.** Two spdlog loggers: `ascend` (debug, stderr) + `ascend_perf` (timing CSV, file), mandatory logging points, ACL_CHECK wrapper, throttled logging, CSV analysis script, debug checklist |
-| [acl-api-reference.md](references/acl-api-reference.md) | AscendCL API signatures, parameters, calling sequences, error handling |
-| [dvpp-api-reference.md](references/dvpp-api-reference.md) | DVPP API signatures, VPC/JPEG/VDEC/VENC parameters, format constraints |
-| [aipp-config-reference.md](references/aipp-config-reference.md) | AIPP config template, static/dynamic modes, CSC matrix, insert_op_conf |
-| [memory-alignment.md](references/memory-alignment.md) | **Critical**: stride alignment, buffer size formulas, per-operation constraints |
-
-### Indexed official docs
-
-Use `ctx_search(source: "ascend-...")` to retrieve excerpts:
-
-| Source label | Content |
-|---|---|
-| `ascend-atc-onnx-conversion` | ATC ONNX model conversion quick start |
-| `ascend-atc-params` | ATC parameter reference |
-| `ascend-aipp-config-template` | Full AIPP config template with defaults |
-| `ascend-aipp-howto` | How to enable AIPP |
-| `ascend-aipp-dynamic-example` | Dynamic AIPP parameter structure |
-| `ascend-acl-api-list` | AscendCL API list per CANN version |
-| `ascend-acl-flow` | AscendCL call flow overview |
-| `ascend-acl-model-exec-flow` | Model execution flow |
-| `ascend-dvpp-vpc-dev-guide` | DVPP VPC development guide |
-| `ascend-dvpp-intro` | DVPP API introduction |
-
-## Device-Scoped Context
-
-Runtime context = `device model + driver/firmware + CANN root + .so set + headers + container/host + OM artifact`.
-
-- Do not mix `libascendcl.so`, DVPP libs, headers, or OM artifacts across device models.
-- Maintain separate context blocks (e.g., `Ascend310P-host`, `Atlas200I-A2-container`).
-- State which context is active before proposing code.
-- Design explicit runtime selection for multi-device projects.
-
-## Design Checklist
-
-- [ ] Input origin: V4L2, FFmpeg, OpenCV, GStreamer, custom allocator, preloaded tensors?
-- [ ] Pixel format, W×H, stride, channel order, normalization, tensor layout at each hop?
-- [ ] Does next stage consume device memory directly or force a host-visible buffer?
-- [ ] Should AIPP absorb resize/CSC/crop/normalization instead of CPU code?
-- [ ] Is DVPP used only where the device + CANN support the format + operation combination?
-- [ ] Do ACL I/O buffers use stable pools, not per-frame alloc?
-- [ ] Does CPU postprocess dominate after NPU inference?
-- [ ] Does async code still block on stream sync, output readback, queue waits, or logging?
-
-## Debugging and Logging
-
-> ⚠️ **During development, you MUST read [debug-logging.md](references/debug-logging.md) and add logging at all the specified stages before running any tests.**
-
-Ascend pipelines run on remote NPU hardware with limited visibility — once a bug hits, you cannot `printf` into the NPU.
-**Every pipeline must embed controllable debug logging from day one**, not retrofitted after a bug surfaces.
-
-The reference [debug-logging.md](references/debug-logging.md) specifies:
-
-| Must-do | Details |
-|---|---|
-| **Configure two loggers** | `ascend` for debug (stderr, human-readable) + `ascend_perf` for timing (CSV, file, `ASCEND_PERF=1`) — see [Multi-Configuration Setup](references/debug-logging.md#multi-configuration-setup-c-spdlog) |
-| **Add debug logging at all mandatory points** | device init, model loading, memory alloc, DVPP operations, inference, stream sync, error paths — see the table in [Mandatory Logging Points](references/debug-logging.md#mandatory-logging-points) |
-| **Add performance timing at all "Perf?" points** | each stage marked Yes logs latency to `ascend_perf.csv` — allows stage-by-stage bottleneck analysis |
-| **Wrap every ACL call with ACL_CHECK** | never ignore an `aclError` return value — see [AscendCL Error Wrapping](references/debug-logging.md#ascendcl-error-wrapping) |
-| **Use spdlog with compile-time + runtime dual control** | production strips levels via `SPDLOG_ACTIVE_LEVEL`; dev enables verbosity via `ASCEND_LOG_LEVEL` env var — see [Logging Control Strategy](references/debug-logging.md#logging-control-strategy) |
-| **Save ATC conversion logs** | `--log=debug 2>&1 | tee` alongside `.om` — see [ATC / Model Conversion Logging](references/debug-logging.md#atc--model-conversion-logging) |
-| **Verify with the Debug Checklist** | 12 items covering both loggers — see [Debug Checklist](references/debug-logging.md#debug-checklist) |
-
-**Bottom line**: If you are writing or modifying Ascend pipeline code, you must open `references/debug-logging.md` and follow it. This is not optional.
-
-## Operating Rules
-
-- Keep data in device memory after preprocessing when APIs allow.
-- Treat repeated `aclrtMemcpy`, CPU image conversion, full tensor readback as suspects.
-- Don't claim zero-copy until every ownership transfer, boundary, sync, and format change is explained.
-- Prefer explicit stage timing over whole-pipeline timing for regression debugging.
-- Check version compatibility before deep changes — mismatched CANN/driver/firmware/toolkit/OM is a frequent root cause.
-- Separate verified facts from device-specific assumptions.
-
-## Non-Goals
-
-- Not generic CUDA, TensorRT, OpenVINO, or Android guidance.
-- Not training-cluster or HCCL tuning unless task is explicitly Ascend training.
-- Not assuming all devices have DVPP, AIPP, or identical media capabilities — require evidence.
+- Async API calls can still serialize at stream sync, output readback, queue waits, or CPU postprocess.
+- A discovered library is not necessarily the loaded library; prove linkage with `ldd`, `readelf`, or
+  the project's `dlopen` path.
+- An OM that loads is not necessarily compatible or performant; retain ATC version, command, source model,
+  input contract, precision policy, AIPP config, and target SoC.
+- DVPP formats, dimensions, address rules, and stride formulas are device/CANN specific. Recalculate from
+  the selected documentation and actual descriptors before allocation.
+- Do not add logging dependencies or replace an established logger solely because an example uses spdlog.
 
 ## Deliverables
 
-For substantial tasks produce:
-1. Device-scoped project baseline
-2. Data-flow or buffer-flow summary
-3. Bottleneck hypothesis
-4. Code or config changes
-5. Measurement method
-6. Unverified device-specific risks
+For substantial tasks, report the active context, verified facts, data/buffer flow, bottleneck or failure
+hypothesis, changes made, measurement or reproduction method, results, and unresolved device-specific risks.

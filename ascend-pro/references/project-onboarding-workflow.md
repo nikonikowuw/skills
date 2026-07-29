@@ -6,7 +6,8 @@ Use this workflow before writing or modifying Ascend performance code in an unfa
 
 ## Rule
 
-Do not start implementation until this workflow is complete or an explicit exception is stated.
+Apply only the phases that can affect the selected change. Continue with version-independent inspection
+when device access is unavailable, but label context-dependent conclusions provisional.
 
 ## Phase 1: Device And Image Identification
 
@@ -27,7 +28,8 @@ Identify which subsystems are actually present:
 
 - Device nodes such as `/dev/davinci*`, `/dev/davinci_manager`, `/dev/devmm_svm`, and `/dev/hisi_hdc`.
 - NPU visibility through `npu-smi info`.
-- Kernel logs for driver initialization, reset, memory, or permission failures.
+- Relevant kernel-log time windows for driver initialization, reset, memory, or permission failures when
+  local access and authorization permit; redact before sharing.
 - Container device mounts if the project runs in Docker or another container runtime.
 
 Required output:
@@ -59,8 +61,8 @@ Check:
 Useful commands:
 
 ```bash
-which npu-smi atc aclprof msame ais_bench 2>/dev/null
-find /usr/local/Ascend /usr /usr/local -maxdepth 6 \( -name 'libascendcl.so*' -o -name 'libacl_dvpp.so*' -o -name 'libacl_op_compiler.so*' -o -name 'libge_runner.so*' \) 2>/dev/null
+command -v npu-smi atc aclprof msprof msame ais_bench 2>/dev/null || true
+find "${ASCEND_HOME_PATH:-/usr/local/Ascend}" -maxdepth 7 \( -name 'libascendcl.so*' -o -name 'libacl_dvpp.so*' -o -name 'libacl_op_compiler.so*' -o -name 'libge_runner.so*' \) 2>/dev/null
 ldd <binary-or-shared-object>
 readelf -d <binary-or-shared-object>
 ```
@@ -94,8 +96,8 @@ Confirm the required runtime APIs exist in the deployed shared objects.
 Useful commands:
 
 ```bash
-nm -D <shared-object> | grep -E 'aclInit|aclFinalize|aclrt|aclmdl|acldvpp'
-readelf -Ws <shared-object> | grep -E 'aclInit|aclFinalize|aclrt|aclmdl|acldvpp'
+nm -D <shared-object> | rg 'aclInit|aclFinalize|aclrt|aclmdl|acldvpp'
+readelf -Ws <shared-object> | rg 'aclInit|aclFinalize|aclrt|aclmdl|acldvpp'
 ```
 
 Check for:
@@ -134,7 +136,8 @@ Do not call the project "zero-copy" or "device-resident" until this map is expli
 
 ## Development Gate
 
-Begin implementation only if:
+Begin context-dependent implementation only when the facts required by that change are known or the
+remaining uncertainty is explicitly accepted. For a full runtime/pipeline change, confirm:
 
 - Driver, firmware, and device visibility are identified.
 - Runtime libraries and tools are identified.
@@ -144,14 +147,15 @@ Begin implementation only if:
 - The project's actual linkage and environment model is understood.
 - Exactly one active device context is selected, unless the task is explicitly to implement multi-device support.
 
-If any item is missing, report a blocker instead of guessing.
+If a missing item can invalidate the selected change, stop that change and state the exact evidence needed.
+Continue independent source inspection or test-harness work where it remains valid.
 
 ## Suggested Command Order
 
-1. Run `scripts/detect-ascend-env.sh`.
-2. Run `scripts/collect-ascend-debug.sh`.
-3. Inspect project build files with `rg`.
-4. Inspect binary dependencies with `ldd` or `readelf -d`.
-5. Inspect library symbols with `nm -D` or `readelf -Ws`.
-6. Compare findings against [version-audit.md](version-audit.md).
-7. Only then inspect or change pipeline code.
+1. Inspect project build/runtime paths with `rg`.
+2. Run `scripts/detect-ascend-env.sh --deployment <label> --device-index <index>` for an ephemeral view, or
+   run `scripts/collect-ascend-debug.sh --output <dir> --deployment <label> --device-index <index>
+   --target-binary <path>` for a reviewable bundle.
+3. Confirm binary dependencies with `ldd` or `readelf -d` and selected-library symbols with `readelf -Ws`.
+4. Compare findings against [version-audit.md](version-audit.md).
+5. Select and review one active context before context-dependent implementation.
