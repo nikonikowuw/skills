@@ -9,6 +9,8 @@
   {"query":"Toolkit2 warns about Gather and Where while converting a transformer vision model for RK3576. Determine actual operator behavior.","should_trigger":true},
   {"query":"We import V4L2 dma-bufs into librga on Rockchip and bind the result with rknn_set_io_mem; validate cache synchronization.","should_trigger":true},
   {"query":"Run a full service-crash safety audit of this RKNN/RGA/MPP C++ repository, including overflow and resource exhaustion.","should_trigger":true},
+  {"query":"The MPP decoder and librga path works, but the RKNN input is corrupted after rknn_set_io_mem on RK3588. Trace the cross-subsystem layout.","should_trigger":true},
+  {"query":"Our RKNN classifier is fast in isolation but the V4L2-to-MPP-to-RGA-to-NPU service misses its latency target. Profile the complete Rockchip pipeline.","should_trigger":true},
   {"query":"An Ascend 310 application using DVPP and ACL crashes when an FP32 tensor is copied to device memory.","should_trigger":false},
   {"query":"My CUDA TensorRT engine has a dynamic-shape binding error and an illegal memory access.","should_trigger":false},
   {"query":"Review this generic C++ image server for integer overflow and out-of-bounds writes; it does not use Rockchip hardware.","should_trigger":false},
@@ -18,5 +20,8 @@
   {"query":"Can you debug an RK4 Runge-Kutta implementation that produces NaNs?","should_trigger":false},
   {"query":"Analyze an Android Java camera application that happens to run on a Rockchip tablet but does not use RKNN, RGA, or MPP.","should_trigger":false},
   {"query":"Optimize a PyTorch model's FP32 training loop on an NVIDIA GPU before ONNX export.","should_trigger":false},
-  {"query":"Audit a generic GStreamer pipeline for latency; the target platform and hardware accelerators are not known.","should_trigger":false}
+  {"query":"Audit a generic GStreamer pipeline for latency; the target platform and hardware accelerators are not known.","should_trigger":false},
+  {"query":"Tune an RK3588 V4L2-to-MPP-to-RGA-to-DRM display pipeline. It is media-only and has no RKNN model or NPU inference stage.","should_trigger":false},
+  {"query":"A standalone librga imresize call corrupts camera frames on our RK3568 media server; this project does not perform RKNN inference.","should_trigger":false},
+  {"query":"Reduce CPU use in a Rockchip MPP encoder that imports camera DMA-BUFs. There is no model, RKNN Runtime, or NPU stage.","should_trigger":false}
 ]

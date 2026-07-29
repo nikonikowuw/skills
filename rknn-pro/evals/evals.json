@@ -3,8 +3,10 @@
   "evals": [
     {
       "id": 1,
+      "route": "runtime-api",
       "prompt": "Our RK3588 C++ service feeds normalized float arrays through rknn_inputs_set with RKNN_TENSOR_FLOAT32 and pass_through=0. A reviewer says Rockchip cannot use FP32 anywhere. Analyze whether the input API usage is valid and explain what must be measured or queried before changing it.",
       "expected_output": "Separates host tensor dtype from NPU graph precision and gives an evidence-based validation plan.",
+      "required_terms": ["RKNN_TENSOR_FLOAT32", "pass_through"],
       "files": [],
       "expectations": [
         "States that RKNN_TENSOR_FLOAT32 is a valid Runtime API tensor type.",
@@ -14,8 +16,10 @@
     },
     {
       "id": 2,
+      "route": "model-conversion",
       "prompt": "Toolkit2 2.3.x rejects or warns about Where, Gather and a custom detection tail in my RK3576 ONNX. Can I assume those layers automatically fall back to CPU? Give me the conversion and mixed-quantization workflow, including concrete API names.",
       "expected_output": "Avoids a blanket CPU-fallback claim and uses the official version-bound operator and hybrid-quantization workflow.",
+      "required_terms": ["hybrid_quantization_step1", "hybrid_quantization_step2"],
       "files": [],
       "expectations": [
         "Distinguishes NPU mapping, graph rewriting, documented CPU/custom operators, rejection, and application-side implementation.",
@@ -25,6 +29,7 @@
     },
     {
       "id": 3,
+      "route": "crash-safety-audit",
       "prompt": "I need a source-level crash audit of an RK3568 video inference daemon, but the board vendor did not expose a serial number and I cannot access the device until next week. Start the useful work now and tell me what remains unverified.",
       "expected_output": "Starts source work without blocking on a serial number and scopes board-dependent conclusions correctly.",
       "files": [],
@@ -36,7 +41,9 @@
     },
     {
       "id": 4,
+      "route": "version-compatibility",
       "prompt": "Our RKNN model built with a newer Toolkit2 fails in rknn_init on one RK3588 image. Produce a compatibility diagnosis without assuming semantic-version ordering proves compatibility.",
+      "required_terms": ["rknn_init", "Toolkit2"],
       "expected_output": "Uses artifact and device evidence rather than a fabricated universal Toolkit/Runtime matrix.",
       "files": [],
       "expectations": [
@@ -47,8 +54,10 @@
     },
     {
       "id": 5,
+      "route": "multi-model-scheduling",
       "prompt": "Design an RK3576 detector-plus-classifier service. The detector and classifier each have a worker thread and their own rknn_context. The team wants to enable RKNN_FLAG_ASYNC_MASK on both contexts, use an unbounded queue, and allocate classifier crops as width*height*3. Review the design and propose a safe scheduling and measurement plan.",
       "expected_output": "Corrects the async-flag model and specifies bounded ownership, stride-aware allocation, core assignment, cleanup, and end-to-end measurement.",
+      "required_terms": ["RKNN_FLAG_ASYNC_MASK", "bounded"],
       "files": [],
       "expectations": [
         "Explains that RKNN_FLAG_ASYNC_MASK has previous-frame output semantics in current headers and is not required merely because workers are multithreaded.",
@@ -59,8 +68,10 @@
     },
     {
       "id": 6,
+      "route": "device-baseline",
       "prompt": "Use the bundled rknn-pro baseline tool to parse references/sample-device-evidence.txt. Report the device identifier, SoC, RGA driver, library roots, and open risks, then explain which values are parser drafts rather than deployment proof. Do not edit the sample.",
       "expected_output": "Runs the bundled parser and accurately summarizes the sample without treating discovered paths as selected runtime facts.",
+      "required_terms": ["RK3568", "1.2.10", "/usr/lib"],
       "files": ["references/sample-device-evidence.txt"],
       "expectations": [
         "Reports device identifier unknown, SoC RK3568, and RGA driver 1.2.10.",
@@ -71,8 +82,10 @@
     },
     {
       "id": 7,
+      "route": "yolo-deployment",
       "prompt": "Our stock Ultralytics YOLOv8 ONNX has one 1x84x8400 output. A reviewer says every Sigmoid, DFL, decode and concat node must always be deleted before RKNN conversion. Decide whether that rule is universal and give a version-aware experiment that chooses between the stock output contract and Rockchip raw branches.",
       "expected_output": "Rejects a universal graph-surgery rule and ties the export boundary to the exact postprocessor, compiler mapping, accuracy, and measured performance.",
+      "required_terms": ["1x84x8400", "conversion logs"],
       "files": [],
       "expectations": [
         "Does not claim that every Sigmoid or DFL node must always be removed.",
@@ -83,8 +96,10 @@
     },
     {
       "id": 8,
+      "route": "model-evidence-gate",
       "prompt": "We inherited detector.rknn but have no ONNX, conversion script, Toolkit2 log, or calibration records. The C++ service currently sends normalized FP32 with RKNN_TENSOR_FLOAT32 and pass_through=0. Confirm whether normalization was baked into conversion and whether the model is INT8, then approve a zero-copy UINT8 rewrite for production.",
       "expected_output": "Refuses to infer conversion-time normalization or whole-graph INT8 from the RKNN file and host I/O, applies the model conversion evidence gate, and scopes what work may continue.",
+      "required_terms": ["blocked", "unknown", "SHA-256"],
       "files": [],
       "expectations": [
         "Marks conversion-time normalization and actual graph/layer precision as unknown rather than guessing from RKNN_TENSOR_FLOAT32, pass_through, or the .rknn artifact.",
@@ -94,6 +109,131 @@
         "Explains that runtime tensor attributes describe the external I/O contract but cannot prove Toolkit2 normalization settings or whole-graph INT8 precision.",
         "Does not approve the production zero-copy UINT8 rewrite while model evidence is missing.",
         "Explicitly permits unrelated source analysis to continue while keeping model-dependent conclusions blocked and marked unknown."
+      ]
+    },
+    {
+      "id": 9,
+      "route": "rga-api-quick-reference",
+      "prompt": "In an RKNN preprocessing path, what is the librga imcrop signature, what does its im_rect describe, and does imcrop resize the crop? This is only an API-shape question; no board or code audit is requested.",
+      "expected_output": "Answers from the quick reference without imposing unrelated model or board evidence gates.",
+      "required_terms": ["imcrop", "im_rect"],
+      "files": [],
+      "expectations": [
+        "Gives the documented imcrop parameters and explains the rectangle fields.",
+        "States that imcrop crops but does not resize, and points to an appropriate combined operation when crop plus scale is required.",
+        "Uses only the quick API route for this simple question and marks the model evidence gate not-applicable.",
+        "Does not require board access, ONNX provenance, or the full RGA lifecycle reference to answer the signature question."
+      ]
+    },
+    {
+      "id": 10,
+      "route": "mpp-api-lifecycle",
+      "prompt": "Our RKNN service receives an MppFrame from the decoder and needs to hand its DMA-BUF to RGA. Show how to obtain the MppBuffer and fd, then explain which frame/buffer lifetime must extend through the RGA consumer. Treat this as a lifecycle and subsystem-boundary question.",
+      "expected_output": "Uses the MPP API route and escalates from the quick reference to lifecycle guidance.",
+      "required_terms": ["mpp_frame_get_buffer", "mpp_buffer_get_fd"],
+      "files": [],
+      "expectations": [
+        "Names mpp_frame_get_buffer and mpp_buffer_get_fd and checks their returned values.",
+        "Explains that the producing frame or retained buffer reference must remain valid until the downstream hardware use completes.",
+        "Covers ownership, synchronization, and release ordering rather than presenting the fd as independent storage.",
+        "Escalates to the full MPP reference because lifecycle and a subsystem boundary are material."
+      ]
+    },
+    {
+      "id": 11,
+      "route": "zero-copy-audit",
+      "prompt": "An RK3588 decoder uses MPP internal allocation. Each decoded MppFrame yields an MppBuffer with a valid mpp_buffer_get_fd result, and that fd is imported by RGA before rknn_set_io_mem. A reviewer says the path cannot be zero-copy unless MPP uses pure external mode. Audit that claim and list the evidence still needed.",
+      "expected_output": "Rejects buffer-mode labels as proof and recognizes that an internal MppBuffer can expose a DMA-BUF fd.",
+      "required_terms": ["mpp_buffer_get_fd", "internal", "DMA-BUF"],
+      "files": [],
+      "expectations": [
+        "States that pure external mode is not a universal prerequisite when the actual internal MppBuffer exposes a shareable DMA-BUF fd.",
+        "Treats zero-copy as an end-to-end evidence claim, not a conclusion from the MPP allocation-mode name.",
+        "Traces fd identity/import, format and plane layout, strides and sizes, CPU mappings or copies, cache/fence ordering, lifetime, and release.",
+        "Keeps pure external mode as an option when ownership, allocator interoperability, or pool control requires it rather than mandating it."
+      ]
+    },
+    {
+      "id": 12,
+      "route": "performance-diagnosis",
+      "prompt": "After a BSP update, our RK3588 MPP-to-RGA-to-RKNN service dropped from 30 fps to 22 fps while model outputs remain correct. Build a measurement plan that can isolate queueing, decode, RGA, Runtime conversion, inference, and thermal effects without guessing that the NPU is slower.",
+      "expected_output": "Builds a staged, repeatable performance diagnosis tied to one device context.",
+      "required_terms": ["p50", "p95", "thermal"],
+      "files": [],
+      "expectations": [
+        "Captures the selected board fingerprint, BSP, Runtime, RGA, MPP, model hash, clocks, and thermal state before comparing runs.",
+        "Measures per-stage service time, queue wait, end-to-end latency, throughput, CPU, memory, and p50/p95 or stronger tail statistics.",
+        "Uses controlled before/after or one-change-at-a-time experiments and does not assign the regression to the NPU without evidence.",
+        "Marks the model conversion evidence gate not-applicable unless the proposed optimization changes a model-dependent input or output contract."
+      ]
+    },
+    {
+      "id": 13,
+      "route": "multi-device-context",
+      "prompt": "We have two RK3588 boards and one container image. The boards report different kernels, rknpu drivers and librga builds, but engineers keep updating one shared .agents/rknn-context.md block. Define a context scheme and comparison workflow that prevents evidence from one device from authorizing changes on another.",
+      "expected_output": "Maintains device-scoped evidence and detects fingerprint drift rather than merging incompatible facts.",
+      "required_terms": ["context ID", "fingerprint"],
+      "files": [],
+      "expectations": [
+        "Creates a separate context block per board, BSP or container combination with a stable device label when no serial is available.",
+        "Includes an environment fingerprint and rejects stale authorization when the fingerprint changes.",
+        "Separates observed linkage and driver facts from discovered candidate paths and unknowns.",
+        "Requires performance and compatibility conclusions to name the exact context they apply to."
+      ]
+    },
+    {
+      "id": 14,
+      "route": "project-onboarding",
+      "prompt": "Onboard an unfamiliar C++ RKNN repository that contains three vendored librknnrt copies, duplicated model wrappers, RGA helpers, and CMake branches for RK3568 and RK3588. No board is currently reachable. Describe the useful source-only work, artifacts to produce, and board-dependent conclusions to defer.",
+      "expected_output": "Inventories the project and starts source work while keeping deployment claims provisional.",
+      "required_terms": ["source-only", "unverified"],
+      "files": [],
+      "expectations": [
+        "Maps build variants, model artifacts, shared-library candidates, wrappers, call paths, buffer ownership, and duplicated implementations before proposing broad changes.",
+        "Allows source-only safety, lifecycle, checked-math, and build-configuration analysis to proceed without a board.",
+        "Defers actual linkage, ABI compatibility, driver behavior, allocator interoperability, and performance conclusions until device evidence exists.",
+        "Produces a provisional project inventory and explicit unknowns rather than blocking all work on onboarding."
+      ]
+    },
+    {
+      "id": 15,
+      "route": "soc-comparison",
+      "prompt": "Choose between RK3568, RK3576 and RK3588 for a two-model RKNN cascade with camera decode and RGA preprocessing. Explain what the bundled SoC matrix can establish, what must be checked against the exact board BSP, and what measurements decide the choice.",
+      "expected_output": "Uses the SoC matrix as a planning aid without treating nominal topology as deployment proof.",
+      "files": [],
+      "expectations": [
+        "Compares relevant NPU, RGA, codec, memory, and scheduling capabilities from the matrix while flagging version-bound claims.",
+        "Requires confirmation of the exact board SKU, BSP, drivers, Runtime, headers, available memory and thermals.",
+        "Uses both model conversion evidence and representative end-to-end throughput, tail latency, CPU, memory and thermal measurements.",
+        "Does not select a SoC from nominal TOPS alone or fabricate a universal compatibility matrix."
+      ]
+    },
+    {
+      "id": 16,
+      "route": "zero-copy-local-fallback",
+      "prompt": "Audit this small RKNN zero-copy adapter for fd ownership, stride, cache synchronization and cleanup. No subagent facility is available in this environment. Continue the review and state how you preserve the intended independent-check coverage.",
+      "expected_output": "Runs the zero-copy checklist locally instead of blocking on unavailable delegation.",
+      "required_terms": ["locally", "coverage"],
+      "files": [],
+      "expectations": [
+        "Does not claim that a subagent is mandatory or stop the audit because delegation is unavailable.",
+        "Applies the same allocation, fd/import, layout, synchronization, lifetime, error-path and release checklist locally.",
+        "Scopes findings to the inspected adapter and reports untraced callers, producers, consumers or runtime facts as coverage gaps.",
+        "Suggests an independent second pass when tooling becomes available without downgrading the current local analysis to no result."
+      ]
+    },
+    {
+      "id": 17,
+      "route": "model-gate-not-applicable",
+      "prompt": "Review only the bounded-queue shutdown, fd cleanup, and error-path ownership in an RKNN service. The model artifact and conversion records are unavailable, but no preprocessing, tensor-layout, quantization, postprocessing, or deployment decision is in scope. Apply the model evidence gate correctly and do the review now.",
+      "expected_output": "Marks the model gate not-applicable for the requested model-independent review and proceeds.",
+      "required_terms": ["not-applicable", "bounded"],
+      "files": [],
+      "expectations": [
+        "Sets the overall model conversion evidence gate to not-applicable for this explicitly model-independent scope.",
+        "Reviews queue bounds, producer and consumer shutdown ordering, fd ownership, cleanup on every error path, and retained work lifetime.",
+        "Does not request the entire model evidence manifest as a prerequisite for the ownership review.",
+        "States that any later model-dependent preprocessing, tensor, quantization or deployment decision would need a separate passed or blocked gate status."
       ]
     }
   ]

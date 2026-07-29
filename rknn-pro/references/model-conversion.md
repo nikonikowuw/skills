@@ -79,8 +79,9 @@ python -m tf2onnx.convert \
 
 ### NHWC → NCHW
 
-TensorFlow defaults to NHWC. Rockchip RKNN commonly expects NHWC (TensorFlow-compatible).
-If the model was trained in NCHW, use `--inputs-as-nchw` in tf2onnx or transpose in preprocessing.
+TensorFlow commonly exports NHWC while PyTorch commonly exports NCHW. RKNN does not have one
+universal layout contract: preserve the export contract, inspect the converted tensor attributes,
+and add a transpose only when the exact conversion/runtime path requires it.
 
 ---
 
@@ -119,29 +120,30 @@ blocked, and unrelated source work that can continue without assuming those fact
 from rknn.api import RKNN
 
 rknn = RKNN(verbose=True)
+try:
+    # Example only: these raw-range ImageNet values are valid only when they
+    # exactly reproduce the preserved training/export preprocessing contract.
+    rknn.config(
+        mean_values=[[123.675, 116.28, 103.53]],
+        std_values=[[58.395, 57.12, 57.375]],
+        target_platform="rk3568",
+        quantized_dtype="asymmetric_quantized-8",
+        quantized_algorithm="normal",
+    )
 
-# target_platform MUST be configured early in modern workflows!
-rknn.config(
-    mean_values=[[123.675, 116.28, 103.53]],   # per-channel mean
-    std_values=[[58.395, 58.395, 58.395]],      # per-channel std
-    target_platform="rk3568",                    # or rk3576 / rk3588
-    quantized_dtype="asymmetric_quantized-8",    # quantization type
-    quantized_algorithm="normal",                # or "mmse" for better accuracy
-)
+    ret = rknn.load_onnx(model="model.onnx")
+    if ret != 0:
+        raise RuntimeError(f"load_onnx failed: {ret}")
 
-# Load ONNX model
-ret = rknn.load_onnx(model="model.onnx")
-assert ret == 0, "load_onnx failed"
+    ret = rknn.build(do_quantization=True, dataset="./dataset.txt")
+    if ret != 0:
+        raise RuntimeError(f"build failed: {ret}")
 
-# Build (quantize and convert)
-ret = rknn.build(do_quantization=True, dataset="./dataset.txt")
-assert ret == 0, "build failed"
-
-# Export RKNN
-ret = rknn.export_rknn("./model.rknn")
-assert ret == 0, "export failed"
-
-rknn.release()
+    ret = rknn.export_rknn("./model.rknn")
+    if ret != 0:
+        raise RuntimeError(f"export_rknn failed: {ret}")
+finally:
+    rknn.release()
 ```
 
 ### Pre-Processing Configuration
@@ -163,7 +165,11 @@ pipeline must contain exactly the intended normalization transform. It can be re
 location or deliberately split into documented stages, but each arithmetic operation must occur
 once and reproduce the training contract. An unknown is not an absence.
 
-`mean_values` and `std_values` can configure Toolkit2 input preprocessing. Raw UINT8 is a common
+`mean_values` and `std_values` can configure Toolkit2 input preprocessing. For the pinned Toolkit2
+contract, preserve the exact documented arithmetic and value domain; familiar ImageNet values in
+raw `[0,255]` units are not interchangeable with means/stds expressed in normalized `[0,1]` units.
+For example, raw-range ImageNet stds are `[58.395, 57.12, 57.375]`, not three copies of the first
+channel's value. Raw UINT8 is a common
 efficient host contract in that case, but it is not safe to derive the entire Runtime call from this
 fact alone. Query converted-model tensor attributes, verify the installed Runtime's `pass_through`
 semantics, and run a known-input parity test. ONNX input dtype alone cannot reveal whether Toolkit2
@@ -172,21 +178,23 @@ added preprocessing after loading the ONNX.
 **Common mistake — double normalization:**
 
 ```c
-// ❌ WRONG: CPU normalizes + model also normalizes = garbage output
-float normalized[640 * 480 * 3];
-for (int i = 0; i < size; i++)
-    normalized[i] = (image[i] / 255.0f - mean) / std;  // normalization on CPU
+// Wrong contract: application normalization duplicates confirmed Toolkit2 normalization.
+rknn_input wrong_input = {0};
+wrong_input.index = 0;
+wrong_input.buf = normalized;
+wrong_input.size = CheckedSizeToUint32(normalized_bytes);
+wrong_input.type = RKNN_TENSOR_FLOAT32;
+wrong_input.fmt = RKNN_TENSOR_NHWC;
+wrong_input.pass_through = 0;
 
-rknn_input input;
-input.buf = normalized;           // already normalized
-input.type = RKNN_TENSOR_FLOAT32; // but model will normalize again!
-
-// ✅ CORRECT: feed raw uint8, let model handle normalization
-rknn_input input;
-input.buf = image;                // raw [0,255] uint8 pixels
-input.type = RKNN_TENSOR_UINT8;   // conversion contract accepts raw uint8
-input.fmt = RKNN_TENSOR_NHWC;
-input.pass_through = 0;           // Runtime applies its validated input conversion
+// Correct only for a confirmed raw-uint8 conversion/runtime contract.
+rknn_input raw_input = {0};
+raw_input.index = 0;
+raw_input.buf = image;
+raw_input.size = CheckedSizeToUint32(image_bytes);
+raw_input.type = RKNN_TENSOR_UINT8;
+raw_input.fmt = RKNN_TENSOR_NHWC;
+raw_input.pass_through = 0;
 ```
 
 The corrected example is valid only when the preserved conversion config, queried input attributes,
@@ -269,7 +277,7 @@ you can sometimes handle it during conversion:
 ```python
 rknn.config(
     mean_values=[[123.675, 116.28, 103.53]],   # R, G, B means
-    std_values=[[58.395, 58.395, 58.395]],
+    std_values=[[58.395, 57.12, 57.375]],
     target_platform="rk3568",
     quantized_dtype="asymmetric_quantized-8",
     # Note: RKNN does NOT have a direct "channel_order" parameter
@@ -285,7 +293,10 @@ rknn.config(
 
 // Or swap channels on CPU before RKNN input
 if (model_expects_bgr && source_is_rgb) {
-    for (int i = 0; i < width * height; i++) {
+    const size_t pixel_count = CheckedMul((size_t)width, (size_t)height);
+    RequireCapacity(rgb_bytes, CheckedMul(pixel_count, 3));
+    RequireCapacity(bgr_bytes, CheckedMul(pixel_count, 3));
+    for (size_t i = 0; i < pixel_count; i++) {
         uint8_t r = rgb[i * 3 + 0];
         uint8_t g = rgb[i * 3 + 1];
         uint8_t b = rgb[i * 3 + 2];
@@ -302,7 +313,7 @@ if (model_expects_bgr && source_is_rgb) {
 **Zero-copy implication:** RGA can output both RGB888 and BGR888 via CSC.
 Use the correct RGA format to match the model — no CPU channel swap needed:
 
-```c
+```cpp
 // RGA output format choice depends on model:
 rga_buffer_t dst = wrapbuffer_handle(dst_handle, w, h,
     (model_expects_rgb ? RK_FORMAT_RGB_888 : RK_FORMAT_BGR_888),  // ⚠️ choose here!
@@ -317,8 +328,13 @@ rga_buffer_t dst = wrapbuffer_handle(dst_handle, w, h,
 | `False` | No PTQ requested; commonly a floating graph on target | Successful build plus graph/layer precision report | Accuracy baseline or precision-sensitive model |
 
 **Modern v2.x Features:**
-- **Automatic Mixed Precision (AMP):** You can provide an `amp_cfg` in `rknn.config()` to automatically fall back precision-sensitive layers (like softmax) to FP16 while keeping the rest as INT8.
-- **W4A16 Quantization:** RK3576 supports advanced W4A16 quantization (`quantized_dtype="w4a16"`) which can significantly reduce memory bandwidth usage for large models like LLMs or heavy transformers, though check compatibility matrix for your specific Toolkit version.
+- Toolkit2 v2.3.2's changelog announces automatic mixed precision, but the changelog does not define
+  a stable Python parameter/config-file contract. Use only the interface documented by the exact
+  installed package/API guide and preserve its generated report. Do not invent a config keyword or
+  assume which layers change precision.
+- Low-bit weight/activation modes are target-, operator-, and release-specific. Use only dtype names
+  accepted by the installed Toolkit2 for the selected SoC, then confirm actual layer precision,
+  accuracy, memory, and latency from generated evidence.
 
 Treat `do_quantization=True` as the requested build mode, not proof that the exported model is wholly
 INT8. Confirm actual graph/layer precision from the build report, including mixed or excluded layers,
@@ -358,7 +374,11 @@ Dynamic shapes are supported in modern versions but require explicit handling at
 1. **Export ONNX with symbolic dims:** When calling `torch.onnx.export()`, define `dynamic_axes` for your inputs (e.g., `{ 'input': {0: 'batch', 2: 'height', 3: 'width'} }`).
 2. **Configure Toolkit2:** You MUST provide a specific list of supported shape combinations in `rknn.config()` using the `dynamic_input` parameter. e.g., `dynamic_input=[[[1,3,224,224]], [[1,3,448,448]]]` (list of lists of lists — covering each input shape across all inputs).
 3. **Verify in Simulator:** Call `rknn.init_runtime()` and `rknn.inference()` with differing input shapes to prove dynamic switching works on the host PC.
-4. **C++ API Usage:** In the target C++ code, you CANNOT just pass different sized tensors to `rknn_inputs_set`. You MUST call `rknn_set_core_mask()` (if relevant) and `rknn_set_input_shape()` for the new shape *before* calling `rknn_inputs_set` and `rknn_run`.
+4. **C++ API Usage:** Do not merely pass a differently sized tensor. In the current Runtime header,
+   populate all input attrs and call `rknn_set_input_shapes(ctx, n_inputs, attrs)`, then query
+   `RKNN_QUERY_CURRENT_INPUT_ATTR` and `RKNN_QUERY_CURRENT_OUTPUT_ATTR` before binding/using memory.
+   Check every return. The singular `rknn_set_input_shape` is deprecated in that header; older BSPs
+   require their version-matched sample and API contract.
 
 ---
 
@@ -420,31 +440,37 @@ rknn = RKNN(verbose=True)
 ret = rknn.load_onnx(model="model.onnx")
 ret = rknn.build(do_quantization=True, dataset="./dataset.txt")
 ```
-Search the output for:
-- `running on NPU` — ops accelerated by NPU
-- `running on CPU` — ops that fall back to CPU (these are candidates for removal)
+Inspect the verbose output and generated build report for per-operator mapping, rewrites, rejection,
+custom/CPU execution, and precision decisions. The wording and report format are release-specific;
+do not infer automatic CPU fallback from a warning or rely on hard-coded log strings.
 
 **Method B: Runtime performance query**
-```c
-rknn_perf_detail perf;
-rknn_query(ctx, RKNN_QUERY_PERF_DETAIL, &perf, sizeof(perf));
-// Check perf.layer_detail for per-op timing and execution target
+```cpp
+rknn_perf_detail perf = {0};
+int ret = rknn_query(ctx, RKNN_QUERY_PERF_DETAIL, &perf, sizeof(perf));
+if (ret == RKNN_SUCC && perf.perf_data != NULL) {
+    consume_version_specific_perf_report(perf.perf_data, perf.data_len);
+}
 ```
+
+In the current header this query requires `RKNN_FLAG_COLLECT_PERF_MASK` at initialization and is
+valid after `rknn_outputs_get`. `perf_data` is a version-specific report string; it is not a stable
+structured per-op schema. Use the Toolkit2 build report to classify mapping/precision and treat
+Runtime detail as supporting measurement, not a portable execution-target API.
 
 ### Step 2 — Identify candidate ops for removal
 
-Typical ops that RKNN NPU cannot accelerate (vary by SoC and RKNN version):
+These are investigation candidates, not a support table. Their result can be NPU mapping, fusion or
+rewrite, a documented CPU/custom implementation, rejection, or application-side work depending on
+the exact target and Toolkit2 release:
 
 | Op | Typical location | CPU/NPU | C++ alternative |
 |---|---|---|---|
-| `NonMaxSuppression` | Detection output | ❌ CPU | Implement NMS in C++ after NPU output |
-| `TopK` | Classification | ❌ CPU | Sort + select in C++ |
-| `Sort` / `ArgSort` | Post-processing | ❌ CPU | Implement in C++ |
-| `Gather` / `Scatter` (dynamic indices) | Various | ⚠️ Often CPU | Rewrite with fixed indices or C++ |
-| `Where` / `NonZero` | Mask processing | ❌ CPU | Implement in C++ |
-| `Reshape` (certain patterns) | Shape changes | ⚠️ May fall back | Check; often free if contiguous |
-| `Expand` / `Tile` (large factors) | Data duplication | ⚠️ Sometimes CPU | Implement in C++ |
-| Custom ONNX ops | Any | ❌ Always CPU | Implement in C++ or replace with supported ops |
+| `NonMaxSuppression` | Detection output | Unknown until conversion evidence | Compare accepted graph with application NMS |
+| `TopK`, `Sort`, `ArgSort` | Classification/postprocess | Unknown until conversion evidence | Compare graph mapping with full-vector application selection |
+| `Gather`, `Scatter`, `Where`, `NonZero` | Dynamic indexing/masks | Shape/attribute sensitive | Inspect exact operator variant and conversion log |
+| `Reshape`, `Expand`, `Tile` | Shape/data movement | Pattern sensitive | Inspect fusion/rewrite and measured cost |
+| Custom operators | Any | Requires an explicitly supported registration/backend path | Follow the exact Toolkit2 custom-op workflow or move outside the graph |
 
 > ⚠️ This list changes with RKNN version and target SoC.
 > **Always verify** by inspecting the verbose build output, not by assumption.
@@ -479,33 +505,61 @@ onnx.utils.extract_model(
 
 After trimming, reconvert to RKNN:
 ```python
-rknn.load_onnx(model="model_trimmed.onnx")
-rknn.build(do_quantization=True, dataset="./dataset.txt")
-rknn.export_rknn("./model_trimmed.rknn")
+ret = rknn.load_onnx(model="model_trimmed.onnx")
+if ret != 0:
+    raise RuntimeError(f"load_onnx failed: {ret}")
+ret = rknn.build(do_quantization=True, dataset="./dataset.txt")
+if ret != 0:
+    raise RuntimeError(f"build failed: {ret}")
+ret = rknn.export_rknn("./model_trimmed.rknn")
+if ret != 0:
+    raise RuntimeError(f"export_rknn failed: {ret}")
 ```
 
 ### Step 4 — Implement removed layers in C++
 
-```c
+```cpp
 // After rknn_run, the NPU output is the raw detection tensor
 // (without NMS). Implement NMS in C++ on the CPU side.
 
-void rknn_run_and_postprocess(rknn_context ctx) {
-    rknn_output outputs[1];
-    outputs[0].want_float = 0;  // keep INT8
-    rknn_outputs_get(ctx, 1, outputs, NULL);
+int get_outputs_and_postprocess(rknn_context ctx,
+                                const rknn_tensor_attr* output_attr) {
+    if (output_attr == nullptr ||
+        (output_attr->type != RKNN_TENSOR_INT8 && output_attr->type != RKNN_TENSOR_UINT8) ||
+        output_attr->qnt_type != RKNN_TENSOR_QNT_AFFINE_ASYMMETRIC) {
+        return RKNN_ERR_PARAM_INVALID;
+    }
+    rknn_output outputs[1] = {0};
+    outputs[0].index = 0;
+    outputs[0].want_float = 0;  // request the native quantized output
+    int ret = rknn_outputs_get(ctx, 1, outputs, NULL);
+    if (ret != RKNN_SUCC) {
+        return ret;
+    }
 
-    // Manual dequantize (only for the boxes we need to sort)
-    float scale = output_attr.scale;
-    uint8_t zp = output_attr.zp;
+    // zp is signed int32_t in rknn_tensor_attr.
+    const float scale = output_attr->scale;
+    const int32_t zp = output_attr->zp;
 
-    // Custom C++ NMS — avoids NPU→CPU shuttle for the whole graph
-    std::vector<Detection> detections = decode_outputs(outputs[0].buf, scale, zp);
-    std::vector<Detection> nms_results = custom_nms(detections, 0.45f, 0.5f);
+    int process_ret = RKNN_SUCC;
+    try {
+        // Decode validates output size/type/quantization before reading the buffer.
+        std::vector<Detection> detections = decode_outputs(
+            outputs[0].buf, outputs[0].size, output_attr->type, scale, zp);
+        std::vector<Detection> nms_results = custom_nms(detections, 0.45f, 0.5f);
+        consume_results(nms_results);
+    } catch (...) {
+        process_ret = -1;
+    }
 
-    rknn_outputs_release(ctx, 1, outputs);
+    const int release_ret = rknn_outputs_release(ctx, 1, outputs);
+    return process_ret != RKNN_SUCC ? process_ret : release_ret;
 }
 ```
+
+Raw output is not guaranteed to be INT8; branch on the queried tensor type and quantization mode.
+Classification top-k normally requires scanning every class element, not only a prefix of the
+buffer. Preserve output release on every path after a successful `rknn_outputs_get`.
 
 ### Step 5 — Measure the gain
 
@@ -515,9 +569,10 @@ clock_gettime(CLOCK_MONOTONIC, &start);
 
 // Full-pipeline benchmark
 for (int i = 0; i < 100; i++) {
-    preprocess();
-    rknn_run(ctx, NULL);
-    postprocess();
+    if (preprocess() != 0 || rknn_run(ctx, NULL) != RKNN_SUCC || postprocess() != 0) {
+        fprintf(stderr, "benchmark iteration failed at %d\n", i);
+        return -1;
+    }
 }
 
 clock_gettime(CLOCK_MONOTONIC, &end);
@@ -585,7 +640,11 @@ strings /usr/lib/librknnrt.so | grep -i 'version\|RKNN'
 
 ### Troubleshooting Load Failures
 
-**Step 0: Always anchor against `rknn_model_zoo` examples.** If a model fails to load or execute, try to load a known-good pre-compiled model from the official `rknn_model_zoo` for your exact chip and OS (e.g., a YOLOv5 example). If the zoo model fails, your board environment (driver, runtime) is broken. If the zoo model works but yours fails, the issue is in your conversion pipeline or version mismatch.
+**Step 0: Anchor against a version-matched `rknn_model_zoo` example.** If a model fails to load or
+execute, run a known-good artifact and its unmodified harness for the exact chip/image. A control
+failure shifts attention to the board stack or harness but does not by itself prove which component
+is broken. A passing control narrows the investigation to differences in artifact, conversion,
+inputs, and application integration; it does not prove a version mismatch.
 
 Do not classify a generic `rknn_init` failure as a version mismatch without evidence. Capture the full
 Runtime log, query SDK/driver versions, verify model integrity and target platform, check pre-compile
@@ -593,6 +652,6 @@ compatibility, and reproduce with a vendor model-zoo artifact built for the same
 
 ## Sources
 
-- Toolkit2 changelog: https://github.com/airockchip/rknn-toolkit2/blob/master/CHANGELOG.md
-- Official dynamic-shape example: https://github.com/airockchip/rknn-toolkit2/tree/master/rknn-toolkit2/examples/functions/dynamic_shape
-- Runtime header defining tensor types and errors: https://github.com/airockchip/rknn-toolkit2/blob/master/rknpu2/runtime/Linux/librknn_api/include/rknn_api.h
+- Toolkit2 changelog (snapshot `59a913d`): https://github.com/airockchip/rknn-toolkit2/blob/59a913d172e7f5ff03c9076e2ec7b1b1288ffd08/CHANGELOG.md
+- Official dynamic-shape example: https://github.com/airockchip/rknn-toolkit2/tree/59a913d172e7f5ff03c9076e2ec7b1b1288ffd08/rknn-toolkit2/examples/functions/dynamic_shape
+- Runtime header defining tensor types and errors: https://github.com/airockchip/rknn-toolkit2/blob/59a913d172e7f5ff03c9076e2ec7b1b1288ffd08/rknpu2/runtime/Linux/librknn_api/include/rknn_api.h

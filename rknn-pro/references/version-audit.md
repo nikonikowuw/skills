@@ -69,7 +69,9 @@ Use those items as prompts for what to verify on the board, not as guaranteed ca
 ## MPP Audit Procedure
 
 1. Confirm whether decode uses pure internal, half internal, or pure external buffer mode.
-2. If the project claims zero-copy after decode, require evidence that pure external mode or an equivalent external-buffer handoff is really in use.
+2. If the project claims zero-copy after decode, trace the returned `MppBuffer` fd, size, layout,
+   synchronization, and lifetime. Pure external mode is required only when the application must
+   supply the pool; internal allocation can still provide an importable DMA-BUF on supported stacks.
 3. If memory pressure is unstable, inspect whether the decoder is still in a mode that allocates too freely.
 
 ## Escalation Rules

@@ -63,7 +63,8 @@ paths. Whether a retry is appropriate depends on the API result and queue state.
 MPP reports format/resolution changes through a frame marked with `mpp_frame_get_info_change(frame)`.
 At that point:
 
-1. Query width, height, horizontal/vertical stride, format, and required buffer size from the frame.
+1. Query width, height, horizontal/vertical stride, format, and
+   `mpp_frame_get_buf_size(frame)` from the frame.
 2. Validate every dimension and size calculation before allocating or importing buffers.
 3. Configure or replace the buffer group for the new layout.
 4. Call `mpi->control(ctx, MPP_DEC_SET_EXT_BUF_GROUP, group)` when using that external group.
@@ -80,6 +81,9 @@ Current upstream `mpp_buffer.h` defines group creation macros and a structured i
 ```c
 MppBufferGroup group = NULL;
 MPP_RET ret = mpp_buffer_group_get_external(&group, MPP_BUFFER_TYPE_DRM);
+if (ret != MPP_OK) {
+    return ret;
+}
 
 MppBufferInfo info = {
     .type = MPP_BUFFER_TYPE_DRM,
@@ -91,7 +95,15 @@ MppBufferInfo info = {
 };
 
 ret = mpp_buffer_commit(group, &info);  // add an unused external buffer to the group
+if (ret != MPP_OK) {
+    mpp_buffer_group_put(group);
+    return ret;
+}
 ret = mpi->control(ctx, MPP_DEC_SET_EXT_BUF_GROUP, group);
+if (ret != MPP_OK) {
+    mpp_buffer_group_put(group);
+    return ret;
+}
 ```
 
 For a one-off imported buffer rather than a decoder group:
@@ -127,8 +139,9 @@ feature checks are preferable when supporting materially different vendor header
   import without a pixel copy.
 - An external group is useful when the application must control allocation or share a pool, but it
   does not guarantee that RGA, RKNN, display, or encode accepts the same format/layout.
-- `mpp_buffer_get_ptr`, `mmap`, CPU pixel conversion, or a copy into a second DMA-BUF are explicit
-  CPU-access/copy boundaries and require cache/lifetime review.
+- `mpp_buffer_get_ptr` or `mmap` creates CPU access but is not itself a pixel copy. A CPU full-frame
+  walk/conversion or copy into a second DMA-BUF is a data-movement boundary. All require
+  cache/lifetime review.
 - Prove fd identity, allocation size, plane offsets, stride, format, fences/cache synchronization,
   and ownership at every stage.
 
@@ -161,7 +174,7 @@ requirements. Do not mandate pure external mode without first proving it is requ
 
 ## Sources
 
-- Upstream MPP README: https://github.com/rockchip-linux/mpp/blob/develop/readme.txt
-- `rk_mpi.h`: https://github.com/rockchip-linux/mpp/blob/develop/inc/rk_mpi.h
-- `mpp_buffer.h`: https://github.com/rockchip-linux/mpp/blob/develop/inc/mpp_buffer.h
-- Decoder example: https://github.com/rockchip-linux/mpp/blob/develop/test/mpi_dec_test.c
+- Upstream MPP README (snapshot `df4864b`): https://github.com/rockchip-linux/mpp/blob/df4864bd1e907cbfd427c397348976c5b2b05ee9/readme.txt
+- `rk_mpi.h`: https://github.com/rockchip-linux/mpp/blob/df4864bd1e907cbfd427c397348976c5b2b05ee9/inc/rk_mpi.h
+- `mpp_buffer.h`: https://github.com/rockchip-linux/mpp/blob/df4864bd1e907cbfd427c397348976c5b2b05ee9/inc/mpp_buffer.h
+- Decoder example: https://github.com/rockchip-linux/mpp/blob/df4864bd1e907cbfd427c397348976c5b2b05ee9/test/mpi_dec_test.c

@@ -120,24 +120,19 @@ def summarize_tensor(name, tensor, numpy_helper):
     return summary
 
 
-def constant_tensors(graph, onnx, numpy_helper):
-    constants = {
-        tensor.name: summarize_tensor(tensor.name, tensor, numpy_helper)
-        for tensor in graph.initializer
-    }
+def constant_tensors(graph, onnx):
+    constants = {tensor.name: tensor for tensor in graph.initializer}
     for node in graph.node:
         if node.op_type != "Constant" or not node.output:
             continue
         for attribute in node.attribute:
             if attribute.type == onnx.AttributeProto.TENSOR:
-                constants[node.output[0]] = summarize_tensor(
-                    node.output[0], attribute.t, numpy_helper
-                )
+                constants[node.output[0]] = attribute.t
                 break
     return constants
 
 
-def preprocessing_candidates(graph, constants, max_depth):
+def preprocessing_candidates(graph, constants, numpy_helper, max_depth):
     consumers = {}
     for index, node in enumerate(graph.node):
         for tensor_name in node.input:
@@ -148,6 +143,12 @@ def preprocessing_candidates(graph, constants, max_depth):
     queue = deque((name, 0, name) for name in graph_inputs)
     visited = set()
     candidates = []
+    summaries = {}
+
+    def constant_summary(name):
+        if name not in summaries:
+            summaries[name] = summarize_tensor(name, constants[name], numpy_helper)
+        return summaries[name]
 
     while queue:
         tensor_name, depth, graph_input = queue.popleft()
@@ -171,7 +172,9 @@ def preprocessing_candidates(graph, constants, max_depth):
                         "outputs": list(node.output),
                         "reason": PREPROCESSING_OPS[node.op_type],
                         "constant_inputs": [
-                            constants[name] for name in node.input if name in constants
+                            constant_summary(name)
+                            for name in node.input
+                            if name in constants
                         ],
                     }
                 )
@@ -192,7 +195,7 @@ def inspect_model(path, max_depth=6):
         {"domain": item.domain or "ai.onnx", "version": item.version}
         for item in model.opset_import
     ]
-    constants = constant_tensors(graph, onnx, numpy_helper)
+    constants = constant_tensors(graph, onnx)
 
     return {
         "schema_version": 1,
@@ -223,7 +226,9 @@ def inspect_model(path, max_depth=6):
             "initializers": [initializer_info(item, onnx) for item in graph.initializer],
             "operator_counts": dict(sorted(Counter(node.op_type for node in graph.node).items())),
         },
-        "preprocessing_candidates": preprocessing_candidates(graph, constants, max_depth),
+        "preprocessing_candidates": preprocessing_candidates(
+            graph, constants, numpy_helper, max_depth
+        ),
         "limitations": [
             "Candidates near ONNX inputs do not prove the training or export preprocessing contract.",
             "ONNX inspection cannot reveal Toolkit2 mean_values/std_values used after ONNX loading.",

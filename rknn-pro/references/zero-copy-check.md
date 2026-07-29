@@ -21,7 +21,7 @@ The report should tell the user: **which copies can be eliminated, and which are
 This is the ideal — but not every pipeline can achieve it:
 
 ```
-V4L2/MPP ──[DMA-BUF fd]──> RGA ──[DMA-BUF fd]──> RKNN ──[partial readback]──> display/encode
+V4L2/MPP ──[DMA-BUF fd]──> RGA ──[DMA-BUF fd]──> RKNN ──[required output access]──> application
 ```
 
 Every hop passes a DMA-BUF file descriptor where possible. **No `mmap` + `memcpy` in the hot path.**
@@ -51,9 +51,9 @@ For **each stage**, check:
 
 #### Source → RGA
 
-- [ ] MPP decoder uses `MPP_BUFFER_EXTERNAL` mode (not internal/half-internal)
+- [ ] The selected MPP mode yields an `MppBuffer` whose DMA-BUF fd, size, layout, and lifetime meet the downstream contract; external mode is required only when the application must supply the pool
 - [ ] RGA input uses `importbuffer_fd(dma_fd)` (NOT `importbuffer_virtualaddr`)
-- [ ] RGA input dimensions and format align with hardware requirements (e.g. 4-byte/even width)
+- [ ] RGA geometry, strides, format, read mode, and eligible core satisfy their exact constraints
 - [ ] `importbuffer_fd` called **once** per buffer (not per frame in the hot path)
 - [ ] RGA output buffer is also a DMA-BUF fd (NOT CPU memory)
 - [ ] RGA operation is strictly validated via `imcheck()` before execution, especially for dynamic ROIs
@@ -62,40 +62,40 @@ For **each stage**, check:
 
 | Anti-pattern | Classification | Why / Workaround |
 |---|---|---|
-| MPP internal mode → must copy out decoded frames | ✅ **Eliminable** | Switch to `MPP_BUFFER_EXTERNAL`, provide your own DMA-BUF pool |
-| `importbuffer_virtualaddr` → CPU page-table walk | ✅ **Eliminable** | Use `importbuffer_fd` with DMA-BUF instead |
+| Copying from an exportable internal `MppBuffer` | ✅ **Eliminable** | Import its validated DMA-BUF fd downstream; external mode is not inherently required |
+| `importbuffer_virtualaddr` despite a compatible DMA-BUF fd | ✅ **Eliminable** | Use `importbuffer_fd` after proving exporter/importer compatibility |
 | `importbuffer_fd` inside per-frame loop | ✅ **Eliminable** | Call once per buffer at init, reuse handles |
-| MPP external buffer mode unavailable on old BSP | ❌ **Unavoidable** | Kernel/BSP too old; upgrade BSP or accept copy |
+| Returned MPP buffer cannot be exported/imported with a compatible layout | ❌ **Unavoidable at that boundary** | Try a supported external pool or conversion target; otherwise retain a measured copy fallback |
 | RGA doesn't support the exact format conversion needed | ❌ **Unavoidable** | CPU NEON fallback for unsupported format paths |
 
 #### RGA → RKNN
 
-- [ ] RKNN input uses `rknn_create_mem_from_fd(rga_dma_fd)` (NOT `rknn_inputs_set` with host buffer)
+- [ ] When layout/import support is compatible, RKNN input uses `rknn_create_mem_from_fd(rga_dma_fd)` rather than a copied host buffer
 - [ ] `rknn_set_io_mem` used to bind the imported memory to the input tensor
-- [ ] `w_stride` / `h_stride` in the tensor attr match the actual RGA output stride
+- [ ] The backing width stride satisfies queried read-only `w_stride`; write-only `h_stride` is set from the physical layout
 
 **Anti-patterns — classify as eliminable ✅ or unavoidable ❌:**
 
 | Anti-pattern | Classification | Why / Workaround |
 |---|---|---|
-| `rknn_inputs_set` with host `malloc` buffer | ✅ **Eliminable** | Use `rknn_create_mem_from_fd` with RGA's output DMA-BUF |
-| `rknn_input.buf = mmap(rga_dma_fd)` → CPU mapping | ✅ **Eliminable** | NPU can access DMA-BUF directly, no mmap needed |
-| Wrong `w_stride` in `rknn_set_io_mem` | ✅ **Eliminable** | Bug fix — query and set correct stride |
-| RKNN model requires specific stride not matching RGA output | ❌ **Unavoidable** | Must copy to adjust stride, or retrain model with matching input size |
+| `rknn_inputs_set` with host buffer although an import-compatible layout already exists | ✅ **Eliminable** | Import and bind the existing DMA-BUF after parity and synchronization tests |
+| CPU mapping retained although no CPU stage touches the buffer | ✅ **Eliminable** | Remove the mapping if the installed RKNN import contract permits it; mapping alone is not a pixel copy |
+| Overwriting read-only `w_stride` to describe a different buffer | ✅ **Eliminable** | Make RGA/backing memory satisfy the queried width stride; set only write-only `h_stride` from the real layout |
+| Upstream layout is incompatible with RKNN input | ❌ **Unavoidable at that boundary** | Use RGA into a compatible DMA-BUF when supported; otherwise a measured conversion/copy fallback is required |
 
 #### RKNN → Postprocess
 
-- [ ] Output uses `rknn_create_mem` + `rknn_set_io_mem` (device-resident output)
-- [ ] Postprocess reads only metadata (bounding boxes, class IDs), not full tensor
-- [ ] If full tensor readback is required: `rknn_outputs_get(want_float=0)` for raw INT8, manual dequantize
+- [ ] Where the selected Runtime/output contract supports it and measurement justifies it, compare preallocated output via `rknn_create_mem` + `rknn_set_io_mem` with `rknn_outputs_get`
+- [ ] Postprocess reads every value required by the algorithm; classification top-k normally scans the complete class vector
+- [ ] Compare raw quantized output plus correct dequantization against `want_float=1`; select from parity and measured end-to-end cost
 
 **Anti-patterns — classify as eliminable ✅ or unavoidable ❌:**
 
 | Anti-pattern | Classification | Why / Workaround |
 |---|---|---|
-| `rknn_outputs_get(want_float=1)` in hot path | ✅ **Eliminable** | Use `want_float=0`, manual dequantize with scale/zp |
-| Full output readback when only top-5 needed | ✅ **Eliminable** | Read only first N bytes (classification) or use NPU postprocess |
-| `rknn_outputs_get` + memcpy to app buffer | ✅ **Eliminable** | Use `rknn_create_mem` for output, cast pointer directly |
+| `want_float=1` dominates measured output time and raw output is supported | ✅ **Potentially eliminable** | Use raw output only after quantization-aware parity and full-pipeline measurement |
+| Reading only a prefix to compute classification top-k | ❌ **Incorrect optimization** | Scan all class elements unless the model itself returns top-k indices/scores |
+| `rknn_outputs_get` followed by an unnecessary duplicate app buffer | ✅ **Eliminable** | Consume the owned/preallocated output in place with required cache sync and lifetime controls |
 | Complex postprocess (NMS, tracking) needs full float tensor | ❌ **Unavoidable** | Algorithm requires full tensor; optimize dequantize or move to NPU |
 
 #### Postprocess → Sink (display/encode)
@@ -111,7 +111,7 @@ For **each stage**, check:
 | memcpy to framebuffer display | ✅ **Eliminable** | Use DRM DMA-BUF import if display hardware supports it |
 | memcpy to MPP encode input | ✅ **Eliminable** | Use MPP external buffer mode, import the DMA-BUF fd directly |
 | Display uses fbdev (no DRM) | ❌ **Unavoidable** | Legacy driver; upgrade to DRM/KMS or accept the copy |
-| Encode input format doesn't match decoder output | ❌ **Unavoidable** | RGA format conversion needed (still DMA-BUF, but not fd-to-fd)
+| Encode input format doesn't match decoder output | ❌ **Unavoidable** | RGA format conversion may be needed while retaining DMA-BUF-backed handoff |
 
 ### Phase 3: Quantify Copies
 
@@ -146,7 +146,7 @@ For each copy marked **unavoidable**, document the exact constraint that prevent
 
 For each **unnecessary** copy, provide:
 1. **What to change** (specific code change)
-2. **Expected gain** (latency reduction or throughput increase estimate)
+2. **Expected gain** as a hypothesis, followed by a required before/after measurement
 3. **Risk** (what could break)
 4. **Verification** (how to confirm the change worked)
 

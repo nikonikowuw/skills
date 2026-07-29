@@ -1,13 +1,13 @@
 ---
 name: rknn-pro
 description: >
-  Build, diagnose, review, or optimize Linux inference and media pipelines
-  using Rockchip RKNN, RKNN-Toolkit2, RKNN Runtime, RGA/librga, MPP,
-  DMA-BUF, or RK3568/RK3576/RK3588 SoCs. Use when a task mentions RKNN
-  conversion, NPU operators, tensor stride, zero-copy pipelines,
-  multi-model scheduling, BSP compatibility, memory corruption, crashes,
-  or kernel-facing safety. Do not use for Ascend/ACL, TensorRT/CUDA,
-  OpenVINO, or non-Rockchip Linux DMA-BUF.
+  Load for Rockchip Linux tasks that involve RKNN,
+  RKNN-Toolkit2, RKNN Runtime, an .rknn artifact, or NPU inference, including
+  adjacent RGA, MPP, DMA-BUF, conversion, stride, zero-copy, scheduling,
+  compatibility, crashes, safety, and performance work on RK3568/RK3576/RK3588.
+  RKNN-containing tasks belong here. Do not load for Rockchip media-only work
+  without RKNN; use rockchip-performance. Do not load for Ascend/ACL,
+  TensorRT/CUDA, OpenVINO, or generic non-Rockchip DMA-BUF.
 ---
 
 # rknn-pro
@@ -17,15 +17,15 @@ Build or tune Rockchip inference and media pipelines on RK3568, RK3576, and RK35
 ## Workflow
 
 1. Classify the task before collecting evidence. Source-only review, conversion planning, and API explanation can start without board access; mark board-dependent conclusions as unverified.
-2. Before developing or approving model input, preprocessing, zero-copy tensor layout, quantization-sensitive postprocessing, or deployment configuration, pass the Model Conversion Evidence Gate below. Keep model provenance separate from device provenance.
+2. Record the Model Conversion Evidence Gate as `passed`, `blocked`, or `not-applicable`. It applies only to decisions that depend on the RKNN artifact's model contract. A blocked model-dependent decision must not stop model-independent API, source-safety, ownership, queueing, or device-evidence work.
 3. When ABI, allocator, driver, compatibility, or performance facts matter, select one device context. Run the bundled diagnostic on that board and render `.agents/rknn-context.md` in the target project.
 4. Read only the references needed for the active task:
    - Model conversion or quantization: [model-conversion.md](references/model-conversion.md), then [npu-op-compatibility.md](references/npu-op-compatibility.md) for operator or precision issues.
    - YOLO detection model deployment: [yolo-deployment-cookbook.md](references/yolo-deployment-cookbook.md).
-   - RKNN Runtime API question: [api-quick-reference.md](references/api-quick-reference.md), then [rknn-api-reference.md](references/rknn-api-reference.md).
-   - RGA API question: [api-quick-reference.md](references/api-quick-reference.md), then [rga-api-reference.md](references/rga-api-reference.md).
-   - MPP API question: [api-quick-reference.md](references/api-quick-reference.md), then [mpp-api-reference.md](references/mpp-api-reference.md).
-   - DMA-BUF or inference pipeline: [zero-copy-pipeline.md](references/zero-copy-pipeline.md); for an implementation audit, follow [zero-copy-check.md](references/zero-copy-check.md) and dispatch the required subagent.
+   - RKNN Runtime API question: start with [api-quick-reference.md](references/api-quick-reference.md); add [rknn-api-reference.md](references/rknn-api-reference.md) only for lifecycle, ownership, version, tensor-layout, or subsystem-boundary questions.
+   - RGA API question in an RKNN pipeline: start with [api-quick-reference.md](references/api-quick-reference.md); add [rga-api-reference.md](references/rga-api-reference.md) only for lifecycle, core/format constraints, version, buffer layout, or subsystem-boundary questions.
+   - MPP API question in an RKNN pipeline: start with [api-quick-reference.md](references/api-quick-reference.md); add [mpp-api-reference.md](references/mpp-api-reference.md) only for lifecycle, ownership, buffer mode, version, or subsystem-boundary questions.
+   - DMA-BUF or inference pipeline: [zero-copy-pipeline.md](references/zero-copy-pipeline.md); for an implementation audit, follow [zero-copy-check.md](references/zero-copy-check.md). For a large repository or independent call-path investigation, dispatch a subagent when one is available; for a small scope or no subagent availability, run the same checklist locally and report coverage.
    - Multi-model or cascade scheduling: [multi-model-scheduling.md](references/multi-model-scheduling.md).
    - SDK upgrade, tensor allocation, alignment, or stride: [memory-alignment.md](references/memory-alignment.md).
    - Crash or full safety audit: follow every phase in [project-crash-risk-audit.md](references/project-crash-risk-audit.md) and use [known-crash-patterns.md](references/known-crash-patterns.md) only as evidence anchors.
@@ -41,7 +41,13 @@ Resolve `scripts/...` and `references/...` relative to this `SKILL.md`, not the 
 
 ## Model Conversion Evidence Gate (`.agents/rknn-model-context.md`)
 
-This gate is required when a development decision depends on what the RKNN artifact expects. Create or update the model context using [model-conversion-manifest.md](references/model-conversion-manifest.md) and preserve the evidence chain:
+Set one overall gate status before using it:
+
+- `passed`: the model-dependent evidence below establishes the intended end-to-end contract.
+- `blocked`: the requested model-dependent decision lacks required evidence. List only the decisions that are blocked and continue independent work.
+- `not-applicable`: the requested conclusion does not depend on model provenance or tensor semantics, such as a simple API signature explanation, source-only cleanup audit, queue ownership review, or device baseline collection.
+
+For a model-dependent decision, create or update the model context using [model-conversion-manifest.md](references/model-conversion-manifest.md) and preserve the evidence chain:
 
 - [ ] ONNX artifact path and SHA-256; opset, inputs/outputs, shapes, dtypes, dynamic dimensions, metadata, and possible graph-embedded preprocessing. Run `python3 <skill-root>/scripts/inspect-onnx-model.py model.onnx` when the artifact is available.
 - [ ] Exact conversion script/config, Toolkit2 version, target platform, and verbose conversion log.
@@ -51,17 +57,17 @@ This gate is required when a development decision depends on what the RKNN artif
 - [ ] RKNN artifact path and SHA-256, linked to the conversion evidence above.
 - [ ] Runtime-queried input/output attributes: type, format, dimensions, strides, quantization type, zero point, and scale.
 
-Assess all three possible normalization locations as **confirmed-present**, **confirmed-absent**, or **unknown**: ONNX graph, Toolkit2 `mean_values`/`std_values`, and application/RGA preprocessing. Pass the gate only when none remains unknown, the evidence establishes one intended end-to-end normalization contract, and actual graph/layer precision is confirmed. A graph inspection can identify candidates but cannot prove the training contract.
+Assess all three possible normalization locations as **confirmed-present**, **confirmed-absent**, or **unknown**: ONNX graph, Toolkit2 `mean_values`/`std_values`, and application/RGA preprocessing. Mark the gate `passed` only when none remains unknown, the evidence establishes one intended end-to-end normalization contract, and actual graph/layer precision is confirmed. A graph inspection can identify candidates but cannot prove the training contract.
 
 If only a `.rknn` file or host-side C buffer is available, record normalization and graph INT8 status as **unknown**. Runtime tensor attributes may confirm the external I/O contract but do not recover Toolkit2 normalization settings or prove whole-graph precision. Continue unrelated source review, but do not finalize preprocessing, `pass_through`, zero-copy input layout, quantization-sensitive postprocessing, or production deployment choices by guessing.
 
-When the gate is blocked, make the boundary explicit in the response. Report:
+When the gate is `blocked`, make the boundary explicit in the response. Report:
 
 1. A status for ONNX-embedded normalization, Toolkit2 normalization, application normalization, and actual graph/layer precision. Use `unknown` when evidence is missing.
 2. Missing ONNX identity and contract fields by name: SHA-256, IR/opset, producer/metadata, every input/output name, shape, dtype, and dynamic dimension, plus input-prefix preprocessing candidates.
 3. Missing conversion evidence: script/config, Toolkit2 version and target, build request/log/report, calibration provenance, mixed-precision configuration, and RKNN SHA-256.
 4. Decisions blocked by those unknowns and the evidence needed to unblock them.
-5. Work that may continue now, limited to analysis or implementation whose correctness does not depend on the missing model facts.
+5. Work that may continue now because its correctness does not depend on the missing model facts.
 
 ## Initialization Checklist (`.agents/rknn-context.md`)
 
@@ -82,11 +88,11 @@ When board-specific facts matter or fingerprint mismatches:
 - [ ] Buffer origin known (V4L2, MPP, DRM, custom)? Format/stride at each hop?
 - [ ] Direct DMA-BUF fd handoff? (No implicit conversion/software copy?)
 - [ ] RKNN I/O uses runtime-managed or imported memory?
-- [ ] Model evidence gate passed for normalization, input contract, and actual graph/layer precision?
-- [ ] Graph precision confirmed from report, not host dtype?
+- [ ] Model evidence gate status recorded; `passed` for model-dependent decisions or `not-applicable` for independent work?
+- [ ] For a model-dependent decision, graph precision confirmed from a build report rather than host dtype?
 - [ ] CMake uses `size_with_stride` gracefully with older headers?
-- [ ] `rknn_create_mem` uses max of tensor size vs stride-derived size?
-- [ ] RGA dimensions, strides, and ROI coordinates strictly validated for hardware alignment?
+- [ ] RKNN allocation covers the authoritative queried and physical-layout byte requirements for the selected Runtime/header?
+- [ ] RGA dimensions, strides, and ROI coordinates validated for the selected core, format, and read mode?
 - [ ] RGA destination matches NPU queried `w_stride` / `h_stride`?
 - [ ] Math overflow / out-of-bounds proven impossible for strides/ROI?
 - [ ] Resource acquisition (fd/mmap) paired with release across all paths?
@@ -95,20 +101,20 @@ When board-specific facts matter or fingerprint mismatches:
 
 ## Known Gotchas
 
-- Two-stage cascade crops (e.g. from bounding boxes) often produce unaligned coordinates causing RGA corruption; snap to 4-byte boundaries before calling RGA → [rga-api-reference.md](references/rga-api-reference.md)
+- RGA ROI and stride constraints vary by core, pixel format, and read mode; derive them from the selected target instead of applying a universal 4-byte pixel rule → [rga-api-reference.md](references/rga-api-reference.md)
 - `RKNN_TENSOR_FLOAT32` ≠ NPU FP32 execution; it triggers host→device format conversion → [memory-alignment.md](references/memory-alignment.md)
 - `RKNN_FLAG_ASYNC_MASK` retrieves **previous** frame's output, not current; its previous-frame output semantics are runtime-version specific → [multi-model-scheduling.md](references/multi-model-scheduling.md)
 - RGA `wrapbuffer_fd` with 4 args assumes tight stride; use 6-arg form → [rga-api-reference.md](references/rga-api-reference.md)
-- `rknn_create_mem` must use max(tensor_size, stride_size) or SIGSEGV → [memory-alignment.md](references/memory-alignment.md)
-- Missing `imcheck` before RGA operations causes silent corruption → [rga-api-reference.md](references/rga-api-reference.md)
+- RKNN allocation must cover the authoritative tensor and physical-layout requirements; an undersized buffer is dangerous, but a crash alone does not prove one fixed size formula or cause → [memory-alignment.md](references/memory-alignment.md)
+- RGA validation helpers are version- and operation-dependent; use the installed validation path when applicable, but do not treat it as proof of allocation, lifetime, or synchronization safety → [rga-api-reference.md](references/rga-api-reference.md)
 - `do_quantization=True` proves only what was requested, not actual graph precision → [model-conversion.md](references/model-conversion.md)
 
 ## Operating Rules
 
 - Precision inquiry → read Toolkit2 build report. Missing? → mark precision as `unknown`, list in gate-blocked report §4.
 - Normalization inquiry → read preserved conversion config/log. Do not infer from ONNX input dtype, `.rknn` filename, host C buffer type, `pass_through`, `want_float`, or Runtime convenience conversion. Missing? → mark as `unknown`.
-- DMA-BUF feasibility → verify ownership + layout + sync + consumer support for every hop. Any unproven? → use virtual-address path, note as measured fallback.
-- RGA image processing → verify all dimensions, ROI coordinates, and strides are strictly aligned to hardware boundaries (e.g. 4-byte/even). ALWAYS mandate `imcheck()` validation before `improcess/imresize/imcrop`.
+- DMA-BUF feasibility → verify ownership + layout + sync + consumer support for every hop. If any is unproven, keep the measured known-good path or block the zero-copy claim until evidence closes the gap; do not select a virtual-address path merely because evidence is missing.
+- RGA image processing → derive dimension, ROI, and stride constraints from the selected core, format, read mode, installed headers, and version-matched guide. Use the available validation API when applicable and check its return status; still prove allocation size, ownership, lifetime, and synchronization separately.
 - `RKNN_FLAG_ASYNC_MASK` question → read [multi-model-scheduling.md](references/multi-model-scheduling.md). Cite the previous-frame output rule; do not generalize to "nonblocking" or "multithreaded".
 - Zero-copy claim → identify every allocation, fd/import, CPU mapping, cache operation, fence, and release point. Any gap? → reject the claim.
 - Static-audit match → trace call paths, sizes, ownership, cleanup, and deployed versions before assigning severity. Matches are candidates, not confirmed findings.
@@ -127,9 +133,10 @@ For substantial diagnostics or reviews, report in this order:
 
 | When | Run |
 |---|---|
-| Have ONNX artifact, need contract | `scripts/inspect-onnx-model.py model.onnx` |
-| Need device baseline | `scripts/rknn-diag.sh -o evidence.txt` on board |
-| Build baseline doc from evidence | `scripts/render-project-baseline.py evidence.txt -o .agents/rknn-context.md` |
-| Source safety audit | `scripts/audit-rockchip-memory-safety.py --preprocess src/` |
-| Board crashed, collect evidence | `scripts/collect-rockchip-crash-evidence.sh [PID]` on board |
-| Have latency logs, need stats | `scripts/summarize-stage-latency.py < log.txt` |
+| Have ONNX artifact, need contract | `python3 <skill-root>/scripts/inspect-onnx-model.py model.onnx` |
+| Need device baseline | `<skill-root>/scripts/rknn-diag.sh -o evidence.txt` on board |
+| Build baseline doc from evidence | `python3 <skill-root>/scripts/render-project-baseline.py evidence.txt -o .agents/rknn-context.md` |
+| Source safety audit | `python3 <skill-root>/scripts/audit-rockchip-memory-safety.py --preprocess src/` |
+| Board crashed, collect evidence | `<skill-root>/scripts/collect-rockchip-crash-evidence.sh [PID]` on board |
+| Have latency logs, need stats | `python3 <skill-root>/scripts/summarize-stage-latency.py log.txt` |
+| Run repeatable trigger/behavior evals | `python3 <skill-root>/scripts/run-skill-evals.py --help` |

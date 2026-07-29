@@ -183,12 +183,13 @@ def detect_library_roots(text):
     return list(dict.fromkeys(roots))[:6]
 
 
-def detect_header_roots(text):
+def detect_header_roots(text, limit=6):
     roots = []
     for directive in collect_unique(HEADER_PATTERN, text):
         roots.extend(collect_unique(ABS_PATH_PATTERN, directive))
     roots.extend(path for path in collect_unique(SDK_PATH_PATTERN, text) if "/include" in path.lower())
-    return list(dict.fromkeys(roots))[:6]
+    roots = list(dict.fromkeys(roots))
+    return roots if limit is None else roots[:limit]
 
 
 def summarize_list(values):
@@ -196,18 +197,24 @@ def summarize_list(values):
 
 
 def environment_fingerprint(text):
+    libraries = detect_libraries(text)
     fields = [
-        detect_soc(text),
-        first_match(KERNEL_PATTERN, text),
-        first_match(OS_RELEASE_PATTERN, text),
-        first_match(RGA_DRIVER_PATTERN, text),
-        *detect_libraries(text)["librga"],
-        *detect_libraries(text)["librknnrt"],
-        *detect_libraries(text)["libmpp"],
-        *detect_header_roots(text),
+        *(value.upper() for value in collect_unique(SOC_PATTERN, text, 1)),
+        *collect_unique(KERNEL_PATTERN, text),
+        *collect_unique(OS_RELEASE_PATTERN, text, 1),
+        *collect_unique(RGA_DRIVER_PATTERN, text, 1),
+        *libraries["librga"],
+        *libraries["librknnrt"],
+        *libraries["libmpp"],
+        *detect_header_roots(text, limit=None),
         *collect_unique(VERSION_LINE_PATTERN, text),
     ]
-    normalized = "\n".join(re.sub(r"\s+", " ", field).strip() for field in fields)
+    canonical = {
+        re.sub(r"\s+", " ", field).strip()
+        for field in fields
+        if field and field != "unknown"
+    }
+    normalized = "\n".join(sorted(canonical))
     return hashlib.sha256(normalized.encode("utf-8")).hexdigest()[:8]
 
 

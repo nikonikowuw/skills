@@ -111,7 +111,9 @@ The MPP documentation describes three decoder memory modes:
 - Half internal mode
 - Pure external mode
 
-It explicitly notes that pure external mode is the most efficient path for zero-copy display style workflows, but harder to use correctly.
+It describes pure external mode as efficient for its zero-copy display workflow, but that does not
+make it mandatory for every downstream accelerator: an internally allocated `MppBuffer` may expose
+an importable DMA-BUF fd. Choose the mode from pool ownership and interoperability requirements.
 
 ## Practical Default Assumptions
 

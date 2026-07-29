@@ -18,22 +18,20 @@ runtime errors.
 
 ## Quick Reference Table
 
-| Operation | Width Stride Align | Height Stride Align | Buffer Addr Align | Size Formula |
+| Operation | Width stride rule | Height/geometry rule | Buffer address | Size source |
 |---|---|---|---|---|
-| **RGA** RGB565 | 2 | 1 | 4 | `ws * hs * 2` |
-| **RGA** RGB888 | 4 | 1 | 4 | `ws * hs * 3` |
-| **RGA** RGBA/BGRA8888 | 4 | 1 | 4 | `ws * hs * 4` |
-| **RGA** NV12/NV21 | 4 | 2 | 4 | `ws * hs * 3 / 2` |
-| **MPP** decode (YUV420SP) | 16 | 16 | varies | `ws * hs * 2` (safe) |
-| **MPP** encode (YUV420SP) | 16 | 16 | varies | `ws * hs * 3 / 2` |
-| **RKNN** `rknn_inputs_set` (host→NPU copy) | model-defined stride | model-defined stride | 4 (FP32) / 2 (FP16) / 1 (UINT8) | from `rknn_tensor_attr.size` |
-| **RKNN** `rknn_create_mem` (NPU-side) | model-defined stride | model-defined stride | page (commonly 4KB, verify target) | `max(size, size_with_stride, stride-derived bytes)`, page-aligned |
-| **RKNN** `rknn_create_mem_from_fd` (DMA-BUF import) | set w_stride to match source | set h_stride to match source | page (4KB, from source allocator) | from source buffer |
-| **RKNN** w_stride / h_stride in `rknn_set_io_mem` | must match actual buffer stride (query via `rknn_query`) | must match actual buffer stride | N/A | from `rknn_tensor_attr` |
-| **DMA-BUF** dma_heap | 4 (varies) | 4 (varies) | page (4KB) | as requested |
+| **RGA2 family** RGB565 / RGB888 / RGBA8888 | 2 / 4 / no extra pixel alignment | Format-specific; RGB raster height has no extra rule in the cited table | Allocator/driver contract | Checked bytes from actual strides and format |
+| **RGA2 family** NV12/NV21 | Width stride multiple of 4 | x/y/width/height/height stride all even | Allocator/driver contract | Checked bytes from actual plane layout |
+| **RGA3** RGB565 / RGB888 / RGBA8888 | 8 / 16 / 4 pixels | Format- and read-mode-specific | Allocator/driver contract | Checked bytes from actual strides and format |
+| **RGA3** NV12/NV21 | Width stride multiple of 16 | x/y/width/height/height stride all even | Allocator/driver contract | Checked bytes from actual plane layout |
+| **MPP** decode | Returned frame layout | Returned frame layout | Selected MPP allocator | `mpp_frame_get_buf_size`; confirm with `mpp_buffer_get_size` |
+| **RKNN** `rknn_inputs_set` | Host tensor contract | Host tensor contract | Host type/allocator contract | Checked value representable by the API's `uint32_t size` |
+| **RKNN** `rknn_create_mem` | Queried model layout | Actual physical height stride | Runtime-managed | Maximum applicable tensor/layout minimum, checked before narrowing |
+| **RKNN** `rknn_create_mem_from_fd` | Backing layout must satisfy queried read-only `w_stride` | Set write-only `h_stride` to actual backing layout | Exporter/importer contract | Exported allocation size, checked against all consumer minima |
 
-> **ws** = width_stride, **hs** = height_stride.
-> Alignment may vary by BSP version and SoC (RK3568 vs RK3576 vs RK3588).
+> **ws** = width stride, **hs** = height stride. The RGA rows cover common raster formats only.
+> Ten-bit, packed, FBC/AFBC, and tile modes have additional rules. When multiple RGA generations
+> can receive a request, use the strictest applicable rule unless an exact-core diagnostic is active.
 
 ## Alignment Calculation Functions
 
@@ -56,12 +54,24 @@ static inline size_t AlignUpChecked(size_t value, size_t alignment) {
     return ((value + alignment - 1) / alignment) * alignment;
 }
 
-// RGA NV12 buffer size
-size_t calc_rga_nv12_size(uint32_t width, uint32_t height) {
-    size_t ws = AlignUpChecked(width, 4);     // RGA NV12 width stride = 4-byte aligned
-    size_t hs = AlignUpChecked(height, 2);    // RGA NV12 height stride = 2-byte aligned
-    // Note: Use checked multiplication in real code to prevent overflow here as well
-    return ws * hs * 3 / 2;
+static inline size_t CheckedMul(size_t lhs, size_t rhs) {
+    if (lhs != 0 && rhs > std::numeric_limits<size_t>::max() / lhs) {
+        throw std::overflow_error("Rockchip buffer size overflow");
+    }
+    return lhs * rhs;
+}
+
+// Pass 4 only for an RGA2-family NV12 request and 16 for RGA3.
+// Padding the stride does not make odd NV12 logical geometry valid.
+size_t CalcRasterNv12Size(uint32_t width,
+                          uint32_t height,
+                          size_t width_stride_alignment) {
+    if ((width & 1U) != 0 || (height & 1U) != 0) {
+        throw std::invalid_argument("NV12 logical width and height must be even");
+    }
+    const size_t ws = AlignUpChecked(width, width_stride_alignment);
+    const size_t pixels = CheckedMul(ws, height);
+    return CheckedMul(pixels, 3) / 2;
 }
 ```
 
@@ -73,16 +83,15 @@ size_t calc_rga_nv12_size(uint32_t width, uint32_t height) {
 def align_up(x, align):
     return (x + align - 1) // align * align
 
-def rga_nv12_size(width, height):
-    ws = align_up(width, 4)
-    hs = align_up(height, 2)
-    return ws * hs * 3 // 2
-
-def mpp_decode_size(width, height):
-    ws = align_up(width, 16)
-    hs = align_up(height, 16)
-    return ws * hs * 2
+def rga_nv12_size(width, height, width_stride_alignment):
+    if width % 2 or height % 2:
+        raise ValueError("NV12 logical width and height must be even")
+    ws = align_up(width, width_stride_alignment)
+    return ws * height * 3 // 2
 ```
+
+Do not synthesize a generic MPP decode allocation from logical dimensions. Use the
+information-change frame's reported buffer size and validate the actual `MppBuffer` capacity.
 
 ## RKNN Memory Alignment Detail
 
@@ -171,13 +180,16 @@ new member exists.
 ### Path 1: `rknn_inputs_set` (host memory → NPU, with internal copy)
 
 ```c
-rknn_input input;
+rknn_input input = {0};
+input.index = 0;
 input.buf = host_buffer;           // host-side buffer
-input.size = image_size;           // total bytes
+input.size = CheckedSizeToUint32(image_size); // reject values above UINT32_MAX
 input.pass_through = 0;            // runtime handles quantize
 input.type = RKNN_TENSOR_UINT8;
 input.fmt = RKNN_TENSOR_NHWC;
-rknn_inputs_set(ctx, 1, &input);
+if (rknn_inputs_set(ctx, 1, &input) != RKNN_SUCC) {
+    return -1;
+}
 ```
 
 - Meet the host type's alignment and the selected Runtime API contract. This path may perform an
@@ -186,6 +198,9 @@ rknn_inputs_set(ctx, 1, &input);
   allocator can impose stronger requirements.
 - For `FP32`, use at least the platform/type alignment and measure any Runtime conversion cost.
 - For NEON-optimized CPU preprocessing feeding this path: **16-byte alignment** improves performance.
+
+`CheckedSizeToUint32` denotes a project helper that rejects values above `UINT32_MAX`; do not rely on
+implicit `size_t` narrowing at Runtime API boundaries.
 
 ### Path 2: `rknn_create_mem` (NPU-managed memory, zero-copy)
 
@@ -207,6 +222,7 @@ after all applicable minimum sizes have been compared.
 
 ```cpp
 #include <algorithm>
+#include <climits>
 #include <cstddef>
 #include <cstdint>
 #include <limits>
@@ -252,7 +268,8 @@ static size_t RgaTensorBytes(uint32_t w_stride,
 
 const rknn_tensor_attr& attr = input_attrs_[i];
 const uint32_t dst_w_stride = attr.w_stride != 0 ? attr.w_stride : model_width;
-const uint32_t dst_h_stride = attr.h_stride != 0 ? attr.h_stride : model_height;
+// Current official headers define w_stride as query output and h_stride as bind input.
+const uint32_t dst_h_stride = rga_destination_h_stride;
 
 size_t alloc_size = attr.RKNN_TENSOR_SIZE_FIELD;
 #if defined(RKNN_HAVE_SIZE)
@@ -271,7 +288,10 @@ if (page_size_value <= 0) {
 }
 alloc_size = AlignUpChecked(alloc_size, static_cast<size_t>(page_size_value));
 
-input_mems_[i] = rknn_create_mem(ctx_, alloc_size);
+if (alloc_size > std::numeric_limits<uint32_t>::max()) {
+    throw std::overflow_error("rknn_create_mem size exceeds uint32_t API limit");
+}
+input_mems_[i] = rknn_create_mem(ctx_, static_cast<uint32_t>(alloc_size));
 if (input_mems_[i] == nullptr) {
     throw std::runtime_error("rknn_create_mem failed");
 }
@@ -286,30 +306,49 @@ authoritative size formula; the switch above is a minimum template, not a univer
 ```c
 // virt_addr: CPU mapping of the DMA-BUF (NULL acceptance is release-dependent — check the header).
 // Last parameter is the byte OFFSET inside the fd (usually 0), not an mmap protection flag.
-rknn_tensor_mem *mem = rknn_create_mem_from_fd(ctx, dma_fd, dma_virt_addr, size, 0);
+rknn_tensor_mem *mem = rknn_create_mem_from_fd(
+    ctx, dma_fd, dma_virt_addr, CheckedSizeToUint32(size), 0);
+if (mem == NULL) {
+    return -1;
+}
 ```
 
 - Imports an existing DMA-BUF from RGA, MPP, or dma_heap.
 - Address alignment is inherited from the source (typically 4KB page-aligned).
-- **Critical**: `w_stride` / `h_stride` in `rknn_tensor_attr` must match the actual buffer layout.
-  Query the model's expected stride via `rknn_query`, then override with the real stride.
+- In the current official header, `w_stride` is read-only: query it and make the producer/backing
+  buffer satisfy it. Do not overwrite it to relabel an incompatible DMA-BUF.
+- In that same header, `h_stride` is write-only: set it to the actual physical height stride before
+  `rknn_set_io_mem`; do not treat a value observed after `rknn_query` as authoritative.
+- Older/vendor headers may differ. Compile and reason against the exact deployed header/runtime pair.
 
 ### Path 4: `rknn_set_io_mem` with w_stride / h_stride
 
 ```c
-rknn_tensor_attr attr;
+rknn_tensor_attr attr = {0};
 attr.index = 0;
-rknn_query(ctx, RKNN_QUERY_INPUT_ATTR, &attr, sizeof(attr));
+if (rknn_query(ctx, RKNN_QUERY_INPUT_ATTR, &attr, sizeof(attr)) != RKNN_SUCC) {
+    return -1;
+}
 
-// For an RGA-produced model input, make RGA write this queried layout.
+// w_stride is read-only: make RGA write the queried width layout.
 const uint32_t dst_w_stride = attr.w_stride != 0 ? attr.w_stride : model_width;
-const uint32_t dst_h_stride = attr.h_stride != 0 ? attr.h_stride : model_height;
-rga_helper.ResizeToFd(src_fd, dst_fd, model_width, model_height,
-                      dst_w_stride, dst_h_stride, RK_FORMAT_RGB_888);
-rknn_set_io_mem(ctx, mem, &attr);
+// h_stride is write-only: this value comes from the destination allocation/layout.
+const uint32_t dst_h_stride = rga_destination_h_stride;
+if (rga_helper.ResizeToFd(src_fd, dst_fd, model_width, model_height,
+                          dst_w_stride, dst_h_stride,
+                          RK_FORMAT_RGB_888) != IM_STATUS_SUCCESS) {
+    return -1;
+}
+attr.h_stride = dst_h_stride;
+if (rknn_set_io_mem(ctx, mem, &attr) != RKNN_SUCC) {
+    return -1;
+}
 ```
 
-- `w_stride` is in **elements** (not bytes) for NHWC/NCHW formats.
+- For the current header, `w_stride` is read-only and `h_stride` is write-only. Those directions are
+  part of the API contract, not stylistic advice.
+- `w_stride` is expressed in tensor elements rather than bytes in this image-tensor contract; verify
+  the selected format/header before applying that statement to another tensor layout.
 - If w_stride ≠ width, the NPU reads `w_stride` elements per row, skipping the padding.
 - Incorrect w_stride/h_stride cause **garbage output** (NPU reads wrong memory locations).
 - For a buffer created specifically as model input, query the model stride and make RGA use it.
@@ -322,35 +361,34 @@ Do not let a helper drop `w_stride` / `h_stride` and call the default-stride `wr
 Make the destination layout explicit at the interface boundary:
 
 ```cpp
-IM_STATUS RgaHelper::ResizeToFd(int src_fd,
-                               int dst_fd,
-                               int dst_width,
-                               int dst_height,
-                               int dst_w_stride,
-                               int dst_h_stride,
-                               int dst_format) {
-    rga_buffer_t dst = wrapbuffer_fd(dst_fd,
-                                     dst_width,
-                                     dst_height,
-                                     dst_format,
-                                     dst_w_stride,
-                                     dst_h_stride);
-    // Wrap src with its own real dimensions and strides, run imcheck, then resize/convert.
-    // ...
-}
+struct RgaFdImage {
+    int fd;
+    int width;
+    int height;
+    int w_stride;
+    int h_stride;
+    int format;
+};
+
+// Its implementation wraps both descriptors, checks bounds and imcheck(), then submits.
+IM_STATUS ResizeToFd(const RgaFdImage& src, const RgaFdImage& dst);
 
 const auto& input_attr = model->GetInputAttr(0);
+if (input_attr.w_stride > static_cast<uint32_t>(INT_MAX) ||
+    rga_destination_h_stride > static_cast<uint32_t>(INT_MAX)) {
+    throw std::overflow_error("RGA stride exceeds int API limit");
+}
 const int dst_w_stride = input_attr.w_stride != 0
     ? static_cast<int>(input_attr.w_stride)
     : model_width;
-const int dst_h_stride = input_attr.h_stride != 0
-    ? static_cast<int>(input_attr.h_stride)
-    : model_height;
+const int dst_h_stride = static_cast<int>(rga_destination_h_stride);
 
-rga_helper.ResizeToFd(src_fd, input_mems_[0]->fd,
-                      model_width, model_height,
-                      dst_w_stride, dst_h_stride,
-                      RK_FORMAT_RGB_888);
+const RgaFdImage src = GetValidatedSourceRgaImage();
+const RgaFdImage dst = {input_mems_[0]->fd, model_width, model_height,
+                        dst_w_stride, dst_h_stride, RK_FORMAT_RGB_888};
+if (ResizeToFd(src, dst) != IM_STATUS_SUCCESS) {
+    throw std::runtime_error("RGA preprocessing failed");
+}
 ```
 
 If the installed librga lacks the stride-aware `wrapbuffer_fd` macro form, import the fd once and call
@@ -359,10 +397,10 @@ RGA destination wrapping, allocation size, and RKNN tensor binding describe one 
 
 ## Why Alignment Matters
 
-Rockchip hardware processes pixels in fixed-size blocks:
-- RGA fetches lines in 4-byte or 32-bit aligned units.
-- MPP video codecs operate on 16×16 macroblocks.
-- YUV420 chroma operates on 2×2 blocks.
+Rockchip hardware processes pixels in fixed-size blocks, but the constraints are not universal. The
+cited raster table uses a 4-byte base for RGA2-family cores and a 16-byte base for RGA3; pixel
+storage converts that byte rule into different width-stride multiples. Codec/BSP-specific MPP
+layouts may add padding or metadata, and YUV420 chroma requires even logical geometry.
 
 Misaligned dimensions cause:
 1. **RGA `imcheck` failure** or silent data corruption.
@@ -371,48 +409,28 @@ Misaligned dimensions cause:
 
 ## RGA Format-Specific Alignment
 
-### NV12 (YUV420SP)
+### Common raster formats by RGA generation
 
-```cpp
-// CORRECT (Industrial Standard)
-size_t w_stride = AlignUpChecked(width, 4);    // width 1281 -> stride 1284 (not 1281!)
-size_t h_stride = AlignUpChecked(height, 2);
-size_t size = w_stride * h_stride * 3 / 2;
+| Core family | RGBA8888 width stride | RGB565 width stride | RGB888 width stride | NV12/NV21 width stride |
+|---|---:|---:|---:|---:|
+| RGA2 family | no additional pixel multiple | 2 | 4 | 4 |
+| RGA3 | 4 | 8 | 16 | 16 |
 
-// WRONG — will fail imcheck or corrupt
-size_t size = width * height * 3 / 2;
-```
-
-**Common failure:** `NV12` width `1281` fails because 1281 is not aligned to 2 (let alone 4).
-Always align before passing to RGA.
-
-### RGB888
-
-```cpp
-size_t w_stride = AlignUpChecked(width, 4);     // 4-byte alignment
-```
-
-### RGB565
-
-```cpp
-size_t w_stride = AlignUpChecked(width, 2);     // 2-byte alignment
-```
+For NV12/NV21 in raster mode, logical x/y/width/height and height stride must also be even. An odd
+logical width such as 1281 is invalid; rounding only the width stride does not repair the logical
+image. Ten-bit formats and non-linear modes have stricter, different requirements. Run `imcheck`
+against the complete source/destination rectangles and selected read modes.
 
 ## MPP Buffer Sizing
 
-MPP's decode buffer sizing:
+After MPP reports an information change, read width, height, horizontal stride, vertical stride,
+format, and `mpp_frame_get_buf_size(frame)`. When a buffer is attached, require
+`mpp_buffer_get_size(mpp_frame_get_buffer(frame))` to cover the reported requirement. The upstream
+README's older stride-based formula and buffer-count examples are rules of thumb for its documented
+decode path, not universal contracts across codecs, bit depths, compression modes, and BSPs.
 
-```text
-Pixel data: hor_stride * ver_stride * 3 / 2
-Extra info: hor_stride * ver_stride / 2
-Safe total: hor_stride * ver_stride * 2
-```
-
-The "safe total" includes padding for hardware alignment and metadata.
-When in doubt, use `hor_stride * ver_stride * 2`.
-
-H.264/H.265 decode typically needs a pool of **20+** buffers.
-MPP pure external mode: user provides buffers via `mpp_buffer_import`.
+Use an external group when the application must supply the allocation pool. An internally allocated
+`MppBuffer` can also expose a DMA-BUF fd, so internal allocation alone does not prove a pixel copy.
 
 ## RKNN Tensor Stride
 
@@ -420,14 +438,23 @@ When using zero-copy (`rknn_create_mem_from_fd` or `rknn_set_io_mem`), the tenso
 `w_stride` and `h_stride` must match the actual buffer layout:
 
 ```c
-rknn_tensor_attr attr;
-rknn_query(ctx, RKNN_QUERY_INPUT_ATTR, &attr, sizeof(attr));
+rknn_tensor_attr attr = {0};
+attr.index = 0;
+if (rknn_query(ctx, RKNN_QUERY_INPUT_ATTR, &attr, sizeof(attr)) != RKNN_SUCC) {
+    return -1;
+}
 
-// Update strides to match the actual buffer (e.g., from RGA output)
-attr.w_stride = AlignUpChecked(model_width, 4);    // must match buffer stride
-attr.h_stride = AlignUpChecked(model_height, 2);   // must match buffer stride
+// w_stride is read-only: the backing layout must satisfy this queried value.
+const uint32_t required_w_stride = attr.w_stride ? attr.w_stride : model_width;
+if (actual_w_stride != required_w_stride) {
+    return -1;
+}
 
-rknn_set_io_mem(ctx, input_mem, &attr);
+// h_stride is write-only: describe the backing allocation at bind time.
+attr.h_stride = actual_h_stride;
+if (rknn_set_io_mem(ctx, input_mem, &attr) != RKNN_SUCC) {
+    return -1;
+}
 ```
 
 If strides don't match, NPU will read/write at wrong offsets and output will be garbage.
@@ -436,23 +463,25 @@ If strides don't match, NPU will read/write at wrong offsets and output will be 
 
 When using RKNN Dynamic Shape or Dynamic Batching, memory allocation must follow these strict rules to prevent Segmentation Faults (`SIGSEGV`) or buffer overruns:
 
-1. **Allocate for Max Capacity**: DMA-BUF buffers (`rknn_create_mem` or DRM allocations) MUST be sized for the **maximum supported batch size and spatial resolution**:
-   `alloc_size = max_batch * max_w_stride * max_h_stride * channels * bytes_per_pixel`
+1. **Allocate for Max Capacity**: determine the maximum supported tensor layout and compute every
+   product with checked `size_t` arithmetic. Also compare the Runtime's stride-aware size fields;
+   do not encode a raw multi-factor multiplication that can overflow before allocation.
 2. **Query the supported shape set**: read the model's dynamic input ranges via
    `rknn_query(ctx, RKNN_QUERY_INPUT_DYNAMIC_RANGE, ...)` before allocating buffers.
-3. **Select the active shape per run**: call `rknn_set_input_shapes` (name per the installed
-   header) with the current frame's shape, then re-query
+3. **Select the active shape per run**: call
+   `rknn_set_input_shapes(ctx, n_inputs, attrs)` when exposed by the installed header, then re-query
    `RKNN_QUERY_CURRENT_INPUT_ATTR` / `RKNN_QUERY_CURRENT_OUTPUT_ATTR` and rebind with
    `rknn_set_io_mem`, while keeping the max-capacity DMA-BUF backing store. Follow the
    `examples/functions/dynamic_shape` sample shipped with the installed Toolkit2 release —
-   query-command and function names have changed across releases.
+   query-command and function names have changed across releases. The singular
+   `rknn_set_input_shape` is explicitly deprecated in the current official header.
 
 ## Common Mistakes
 
-1. **Passing unaligned width/height to RGA** → `imcheck` fails or silent corruption.
-2. **Using `width * height * 3 / 2` instead of aligned stride formula** → buffer too small.
-3. **MPP decode using internal mode when zero-copy needed** → can't get DMA-BUF fd.
-4. **RKNN passthrough input without setting correct `w_stride`/`h_stride`** → NPU misreads data.
+1. **Passing geometry, strides, or ROI offsets that violate the selected RGA core/format/read-mode contract** → validation failure or incorrect access.
+2. **Using a logical packed-size formula for a physically padded or multi-plane layout** → buffer too small.
+3. **Assuming MPP internal allocation cannot export a DMA-BUF fd** → unnecessary copy or pool rewrite.
+4. **Overwriting RKNN read-only `w_stride`, or failing to set write-only `h_stride` from the real layout** → rejected binding or misread data.
 5. **Reusing `importbuffer_fd` every frame** → performance regression (import is expensive; do once).
 6. **Assuming RK3568, RK3576, and RK3588 have identical alignment requirements** → verify on target BSP.
 7. **Checking `size_with_stride` in only one algorithm package** → sibling packages keep the old,
@@ -466,21 +495,30 @@ When using RKNN Dynamic Shape or Dynamic Batching, memory allocation must follow
 ## Verification Snippet
 
 ```c
-#include <assert.h>
-
-void check_rga_alignment(const char* label, int width, int height, int format) {
-    int ws_align = 4;  // default for RGB888/RGBA/NV12
-    int hs_align = 1;  // default for RGB
-
-    if (format == RK_FORMAT_RGB_565) {
-        ws_align = 2;
-    } else if (format == RK_FORMAT_YCbCr_420_SP || format == RK_FORMAT_YCbCr_422_SP) {
-        hs_align = 2;
+IM_STATUS validate_rga_request(rga_buffer_t src,
+                               rga_buffer_t dst,
+                               im_rect src_rect,
+                               im_rect dst_rect,
+                               int usage) {
+    if (src_rect.x < 0 || src_rect.y < 0 || src_rect.width <= 0 || src_rect.height <= 0 ||
+        dst_rect.x < 0 || dst_rect.y < 0 || dst_rect.width <= 0 || dst_rect.height <= 0 ||
+        src_rect.x > src.wstride - src_rect.width ||
+        src_rect.y > src.hstride - src_rect.height ||
+        dst_rect.x > dst.wstride - dst_rect.width ||
+        dst_rect.y > dst.hstride - dst_rect.height) {
+        return IM_STATUS_ILLEGAL_PARAM;
     }
-
-    assert(width % ws_align == 0 && "RGA width alignment failed");
-    assert(height % hs_align == 0 && "RGA height alignment failed");
-    printf("[%s] width=%d (align=%d) height=%d (align=%d) OK\n",
-           label, width, ws_align, height, hs_align);
+    return imcheck(src, dst, src_rect, dst_rect, usage);
 }
 ```
+
+`imcheck` is the final capability/alignment gate; arithmetic checks remain necessary to prevent
+overflow before constructing the RGA descriptors.
+
+## Source Snapshot
+
+Validated 2026-07-28 against librga commit
+[`2b32edcb97b601b25683e2941d888c8515da6d55`](https://github.com/airockchip/librga/tree/2b32edcb97b601b25683e2941d888c8515da6d55)
+and RKNN Toolkit2 commit
+[`59a913d172e7f5ff03c9076e2ec7b1b1288ffd08`](https://github.com/airockchip/rknn-toolkit2/tree/59a913d172e7f5ff03c9076e2ec7b1b1288ffd08).
+Treat the deployed headers, shared objects, drivers, allocator, and model attributes as authoritative.

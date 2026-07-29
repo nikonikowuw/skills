@@ -66,6 +66,19 @@ capture_shell() {
   sh -c "$command" >>"$report" 2>&1 || true
 }
 
+inspect_elf_dependencies() {
+  local binary="$1"
+  printf '\n$ static ELF dependency inspection: %s\n' "$binary" >>"$report"
+  if command -v readelf >/dev/null 2>&1; then
+    readelf -d -- "$binary" >>"$report" 2>&1 || true
+    readelf -l -- "$binary" >>"$report" 2>&1 || true
+  elif command -v objdump >/dev/null 2>&1; then
+    objdump -p -- "$binary" >>"$report" 2>&1 || true
+  else
+    echo "Neither readelf nor objdump is available; dependency metadata was not inspected." >>"$report"
+  fi
+}
+
 {
   echo "Rockchip diagnostic report"
   echo "Collected: $(date -Iseconds 2>/dev/null || date)"
@@ -101,8 +114,8 @@ capture free -m
 if [[ -n "$target_binary" ]]; then
   section "Target binary"
   if [[ -r "$target_binary" ]]; then
-    capture ldd "$target_binary"
-    capture readelf -d "$target_binary"
+    capture file -- "$target_binary"
+    inspect_elf_dependencies "$target_binary"
   else
     echo "Target binary is not readable: $target_binary" >>"$report"
   fi

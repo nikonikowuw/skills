@@ -5,35 +5,28 @@ image processing. Use the **im2d API** (modern, recommended).
 
 ## RGA Capabilities and Limitations
 
-| Supported | Not supported |
-|---|---|
-| **Resize** (bilinear, bicubic, nearest) | **Affine transform** (warp affine, perspective) |
-| **Crop** (rectangular region) | **Convolution / filter** (blur, sharpen, edge detect) |
-| **Color space conversion** (YUV↔RGB, etc.) | **Morphological ops** (dilate, erode, open, close) |
-| **Rotate** (90°, 180°, 270°) | **Histogram / statistics** |
-| **Flip** (horizontal, vertical) | **Drawing** (lines, circles, text) |
-| **Translate / shift** | **Custom pixel operations** (lookup table, threshold) |
-| **Format conversion** (NV12↔RGB↔RGBA) | **Multi-pass / chained operations** (must interleave with CPU sync) |
-| **Alpha blending** (limited, via channel) | **Non-2D transforms** (perspective, homography) |
+| Common fixed-function building blocks | Hardware/library/version-specific; verify | Not a general RGA contract |
+|---|---|---|
+| Crop, scale, format conversion, and color-space conversion | Exact input/output formats, CSC modes, interpolation, scale ratios, and resolutions | Arbitrary GPU-style shaders or user kernels |
+| 90/180/270 rotation, mirror, and translation | Alpha blend, color key, color fill/palette, and ROP | Arbitrary affine matrices, perspective, or homography |
+| DMA-BUF-backed source/destination processing | Quantize, rectangle/border, mosaic, OSD, Gaussian blur on listed hardware | General convolution/filter, morphology, histogram/statistics, or text/shape rasterization |
+| Synchronous and asynchronous submissions | Compound, array, task/job APIs and compressed/tiled read modes | An undocumented format/operation combination merely because another RGA core supports it |
 
-> ⚠️ RGA is a **fixed-function 2D hardware block**, not a GPU shader. It excels at common
-> pre-processing operations used in camera and display pipelines. If the operation is not in the
-> supported list, it must be handled on CPU (NEON-optimized) or NPU.
->
-> For affine or perspective transforms (e.g., document scanning, AR), use:
-> - **CPU**: OpenCV `warpAffine` / `warpPerspective` with NEON optimization
-> - **NPU**: Custom RKNN model for spatial transform
+RGA is a fixed-function 2D block, not a programmable shader. The API surface can be broader than a
+given core's capability: match SoC/core/format/read mode against the pinned guide, query available
+capabilities where supported, and require `imcheck` success. If the exact request is unsupported,
+choose a measured CPU, GPU, NPU, or multi-stage fallback appropriate to the application.
 
 ### When to use RGA vs CPU vs NPU
 
 | Criterion | RGA | CPU (NEON) | NPU (RKNN) |
 |---|---|---|---|
-| Resize + CSC | ✅ Fastest, offloaded | ✅ Flexible | ❌ Overkill |
-| Crop | ✅ Zero-copy (DMA-BUF) | ✅ | ❌ |
-| Rotate / Flip | ✅ Hardware | ✅ | ✅ (model-dependent) |
-| Affine / Perspective | ❌ **Not supported** | ✅ OpenCV | ✅ Custom model |
-| Multi-step pipeline | ❌ One op at a time | ✅ Full control | ✅ Batch |
-| Small images (<64×64) | ⚠️ Overhead may dominate | ✅ Prefer CPU | ❌ |
+| Resize + CSC | Fixed-function candidate when the exact combination validates | Flexible fallback | Model-specific and usually unnecessary |
+| Crop | Can retain DMA-BUF backing; ownership/sync still required | Flexible fallback | Usually unnecessary |
+| Rotate / Flip | Common fixed-function operation | Flexible fallback | Model-dependent |
+| Arbitrary affine / perspective | No general matrix-warp contract | OpenCV or another validated engine | Custom-model option |
+| Multi-step pipeline | Use supported compound/task/job APIs or explicit fenced stages | Full control | Model-dependent batching |
+| Small images | Submission overhead may dominate; measure | Often competitive; measure | Measure only when already model-based |
 
 ## Buffer Import
 
@@ -47,10 +40,11 @@ Import a DMA-BUF file descriptor for RGA processing. This is the **preferred zer
 
 - `fd`: DMA-BUF file descriptor (from V4L2, MPP, DRM, dma_heap, etc.)
 - `size`: buffer size in bytes
-- Returns: handle (opaque), or NULL on failure
+- Returns: opaque handle; reject the installed API's invalid/zero-handle result
 
-**Performance:** `importbuffer_fd()` is intentionally expensive — do NOT call every frame.
-Import once for a pool of buffers and reuse handles.
+**Performance:** importing has measurable setup cost. Import once and reuse handles when the buffer
+pool is reusable; when buffers are genuinely ephemeral, measure the import path and preserve exact
+fd/handle lifetime rather than caching stale handles.
 
 ### `importbuffer_virtualaddr`
 
@@ -58,7 +52,8 @@ Import once for a pool of buffers and reuse handles.
 rga_buffer_handle_t importbuffer_virtualaddr(void *virt_addr, int size);
 ```
 
-Import CPU virtual address. Slower (page-table walk overhead). Use only when DMA-BUF is unavailable.
+Import a CPU virtual address. This can add page-table and cache-maintenance cost. Use it for a
+CPU-owned source or when no compatible DMA-BUF path exists, then compare the measured result.
 
 ### `releasebuffer_handle`
 
@@ -95,9 +90,10 @@ Librga headers commonly expose this stride-aware macro invocation:
 rga_buffer_t dst = wrapbuffer_fd(fd, width, height, format, w_stride, h_stride);
 ```
 
-When the destination fd is an RKNN input allocation, pass the queried model input
-`w_stride` / `h_stride` explicitly. The short/default-stride wrapper can describe a tightly packed
-buffer even when RKNN allocated or expects padded rows.
+When the destination fd is an RKNN input allocation, pass the queried read-only model `w_stride`
+and the actual backing allocation's `h_stride` explicitly. The current RKNN header defines
+`h_stride` as write-only, so a queried value is not evidence. The short/default-stride wrapper can
+describe a tightly packed buffer even when RKNN/backing memory uses padded rows.
 
 The underlying C symbol may be declared as
 `wrapbuffer_fd_t(fd, width, height, w_stride, h_stride, format)`, with a different parameter order.
@@ -148,8 +144,15 @@ IM_STATUS improcess(rga_buffer_t src, rga_buffer_t dst, rga_buffer_t pat,
 
 Combined operation driven by rects and usage flags: `srect` selects the source region, which is
 scaled/converted into `drect` of the destination. Pass empty (`{}`) `pat`/`prect` when no pattern
-blend is used, and `IM_SYNC` in `usage` for synchronous execution. 
-**Multi-Core Note**: On RK3588/RK3576, you can bitwise-OR the `usage` flag with `IM_HAL_CORE_RGA3` or `IM_HAL_CORE_RGA2` to explicitly bind the operation to a specific hardware core, preventing cross-stream contention. Run `imcheck` with the same rects first.
+blend is used, and `IM_SYNC` in `usage` for synchronous execution.
+
+Core selection is not a `usage` flag. Current librga exposes scheduler values such as
+`IM_SCHEDULER_RGA3_CORE0` through either `imconfig(IM_CONFIG_SCHEDULER_CORE, value)` for the current
+thread or `im_opt_t.core` with an extended `improcess` overload. Availability depends on the SoC,
+driver, librga, and header. The official guide warns that core/priority configuration can cause a
+system crash or deadlock and advises using it only for development/debugging, not production.
+Leave automatic scheduling enabled in production unless the platform vendor supplies a validated
+product-specific contract. Never OR scheduler enums into `usage`.
 
 ### `imcvtcolor`
 
@@ -230,34 +233,35 @@ This is especially important when buffer dimensions or formats come from runtime
 
 ## Alignment Rules (Common Pitfalls)
 
-| Format | Width stride alignment | Height stride alignment |
-|---|---|---|
-| RGB565 | 2 | 1 |
-| RGB888 | 4 | 1 |
-| RGBA/BGRA 8888 | 4 | 1 |
-| NV12 / NV21 | 4 | 2 |
-| YUV420 | 4 | 2 |
+Raster alignment depends on hardware generation and format:
 
-> ⚠️ **NV12 width must be even and ≥ 2.** `imcheck` will reject NV12 with odd width like 1281.
+| Core family | RGBA8888 width stride | RGB565 width stride | RGB888 width stride | NV12/NV21 width stride |
+|---|---:|---:|---:|---:|
+| RGA2 family | no additional pixel multiple | 2 | 4 | 4 |
+| RGA3 | 4 | 8 | 16 | 16 |
 
-For stride calculation:
-```c
-// NV12 stride alignment
-int w_stride = ALIGN_UP(width, 4);   // 4-byte alignment
-int h_stride = ALIGN_UP(height, 2);  // 2-byte alignment
-
-// NV12 buffer size
-int size = w_stride * h_stride * 3 / 2;
-```
+For raster NV12/NV21, x/y offsets, logical width/height, and height stride must also be even. An odd
+logical width such as 1281 remains invalid even if the backing stride is rounded up. RGA3 ten-bit
+YUV requires a width stride multiple of 64 and x/y offsets multiple of 4; FBC and tile read modes add
+their own constraints. If the driver can schedule a request onto several generations, satisfy the
+strictest applicable rule. Use checked arithmetic from
+[memory-alignment.md](memory-alignment.md) for byte sizing and run `imcheck` on the complete request.
 
 ### Unaligned Cascade Cropping (Two-Stage Networks)
 
-In multi-model cascades (e.g., Face Detection → Crop → Recognition), bounding box coordinates produced by the first stage are often unaligned (e.g., `x=13, width=45`). RGA will fail or produce skewed images if these unaligned coordinates are passed directly into `im_rect` for `imcrop` or `improcess`.
+In multi-model cascades (for example detection, crop, then recognition), a detector can produce a
+rectangle that violates the selected source format/core/read-mode constraints. For raster NV12,
+`x`, `y`, width, and height must be even. RGB constraints differ and must not inherit an arbitrary
+byte-based ROI rule.
 
 **Workaround:**
-1. **Snap to aligned boundaries**: Expand the logical bounding box outwards to the nearest hardware-aligned boundaries (e.g., `floor(x)` to nearest 4-byte boundary, `ceil(width)` to nearest 4-byte boundary).
-2. **Hardware Crop**: Use RGA `imcrop` or `improcess` on this slightly larger, aligned region.
-3. **Software Trim (Optional)**: If the second-stage model is highly sensitive to the 1-3 pixels of extra context, perform a CPU `memcpy`-based trim on the much smaller output buffer. In most cases, the model tolerates the extra padding.
+1. Determine pixel-coordinate multiples from the source format, selected read mode, and eligible
+   hardware cores. Do not confuse byte-stride alignment with pixel-coordinate alignment.
+2. Expand with overflow-checked align-down/align-up operations, then clamp to source bounds while
+   preserving the required multiples. Reject empty or unrepresentable rectangles.
+3. Run `imcheck` with the exact source/destination rectangles and operation flags before submission.
+4. If the model contract requires the exact unsnapped crop, use a verified fallback; do not assume
+   extra context is harmless.
 
 **Critical: `importbuffer_fd()` is expensive — call once per buffer, reuse handles.**
 
@@ -269,11 +273,10 @@ input attribute and carry it through the RGA helper API:
 ```cpp
 const rknn_tensor_attr& input_attr = model->GetInputAttr(0);
 const int dst_w_stride = input_attr.w_stride != 0
-    ? static_cast<int>(input_attr.w_stride)
+    ? CheckedUint32ToInt(input_attr.w_stride)
     : model_width;
-const int dst_h_stride = input_attr.h_stride != 0
-    ? static_cast<int>(input_attr.h_stride)
-    : model_height;
+// h_stride is write-only in the current RKNN header; use the real backing layout.
+const int dst_h_stride = CheckedUint32ToInt(rga_destination_h_stride);
 
 rga_buffer_t dst = wrapbuffer_fd(dst_fd,
                                  model_width,
@@ -283,6 +286,8 @@ rga_buffer_t dst = wrapbuffer_fd(dst_fd,
                                  dst_h_stride);
 ```
 
+In the current RKNN header, `w_stride` is read-only: query it and make RGA/backing memory satisfy it.
+`h_stride` is write-only: set it from this real destination layout when calling `rknn_set_io_mem`.
 Use `wrapbuffer_handle(..., dst_w_stride, dst_h_stride)` when the installed librga does not expose
 the stride-aware fd overload. Size the backing DMA-BUF from these same strides and the pixel format,
 not merely from `model_width * model_height`. Run `imcheck` before the operation.
@@ -295,12 +300,17 @@ not merely from `model_width * model_height`. Run `imcheck` before the operation
 // === Setup (once) ===
 
 // Source: DMA-BUF fd from V4L2/MPP
-rga_buffer_handle_t src_handle = importbuffer_fd(src_fd, src_size);
+rga_buffer_handle_t src_handle = importbuffer_fd(src_fd, CheckedSizeToInt(src_size));
+if (src_handle == 0) return -1;
 rga_buffer_t src = wrapbuffer_handle(src_handle, src_w, src_h,
                                      RK_FORMAT_YCbCr_420_SP, src_w_stride, src_h_stride);
 
 // Destination: DMA-BUF fd from dma_heap or pre-allocated
-rga_buffer_handle_t dst_handle = importbuffer_fd(dst_fd, dst_size);
+rga_buffer_handle_t dst_handle = importbuffer_fd(dst_fd, CheckedSizeToInt(dst_size));
+if (dst_handle == 0) {
+    releasebuffer_handle(src_handle);
+    return -1;
+}
 rga_buffer_t dst = wrapbuffer_handle(dst_handle, dst_w, dst_h,
                                      RK_FORMAT_RGB_888, dst_w_stride, dst_h_stride);
 
@@ -309,15 +319,32 @@ rga_buffer_t dst = wrapbuffer_handle(dst_handle, dst_w, dst_h,
 // Validate (im_rect by value; success is IM_STATUS_NOERROR)
 im_rect src_rect = {0, 0, src_w, src_h};
 im_rect dst_rect = {0, 0, dst_w, dst_h};
-IM_STATUS ret = imcheck(src, dst, src_rect, dst_rect);
+IM_STATUS ret = imcheck(src, dst, src_rect, dst_rect, 0);
 if (ret != IM_STATUS_NOERROR) {
     printf("RGA imcheck failed: %s\n", imStrError(ret));
+    releasebuffer_handle(src_handle);
+    releasebuffer_handle(dst_handle);
+    return -1;
 }
 
 // Convert NV12 -> RGB888 + resize to 640x640
-imresize(src, dst, 0, 0, INTER_LINEAR, 1);  // sync=1
+ret = imresize(src, dst, 0, 0, INTER_LINEAR, 1);  // sync=1
+if (ret != IM_STATUS_SUCCESS) {
+    printf("RGA resize failed: %s\n", imStrError(ret));
+}
 
 // === Cleanup (at shutdown) ===
 releasebuffer_handle(src_handle);
 releasebuffer_handle(dst_handle);
+return ret == IM_STATUS_SUCCESS ? 0 : -1;
 ```
+
+`CheckedSizeToInt` and `CheckedUint32ToInt` are project helpers that reject values above `INT_MAX`;
+do not implicitly narrow allocation sizes or strides to librga's `int` parameters.
+
+## Source Snapshot
+
+Validated 2026-07-28 against librga commit
+[`2b32edcb97b601b25683e2941d888c8515da6d55`](https://github.com/airockchip/librga/tree/2b32edcb97b601b25683e2941d888c8515da6d55),
+including the raster alignment table, scheduler enums, `imconfig`, and the production warning. The
+installed header, userspace library, driver, detected cores, and `imcheck` result remain authoritative.

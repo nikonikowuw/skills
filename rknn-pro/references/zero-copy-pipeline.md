@@ -35,21 +35,24 @@ The critical design question at each hop is:
 
 Rockchip MPP documentation describes three decoder memory modes. For zero-copy-oriented work:
 
-- Pure internal mode is easy to start with, but difficult for zero-copy display style paths.
-- Half internal mode gives more control, but still does not make zero-copy easy.
-- Pure external mode is described as the most efficient way for zero-copy display paths.
+- Pure internal mode is easy to start with and gives the application less pool control. Its returned
+  `MppBuffer` may still expose a DMA-BUF fd usable by downstream hardware.
+- Half internal mode gives the application group limits and lifecycle control.
+- Pure external mode is useful when the application/display allocator must own the pool; the MPP
+  README describes it as efficient for its zero-copy display workflow, not as a prerequisite for
+  every decode-to-accelerator handoff.
 
-When the code uses MPP decode and later wants display or accelerator sharing, inspect whether the decoder is stuck in internal or half-internal allocation mode.
+When MPP output feeds display or another accelerator, inspect the selected mode and pool ownership,
+then verify whether the returned `MppBuffer` fd, size, layout, synchronization, and lifetime are
+actually import-compatible. Allocation mode alone does not prove or disprove zero-copy.
 
 ### What Pure External Mode Implies In Practice
 
-MPP's readme states that pure external mode requires the user to create an empty `MppBufferGroup` and import memory from an external allocator by file handle. The same document also gives a sizing rule of thumb for decode buffers:
-
-- Pixel data: `hor_stride * ver_stride * 3 / 2`
-- Extra info: `hor_stride * ver_stride / 2`
-- Safe total: `hor_stride * ver_stride * 2`
-
-It also notes that H.264 or H.265 often needs `20+` buffers, while other codecs often need `10`.
+MPP's README states that pure external mode requires an empty `MppBufferGroup` populated from an
+external allocator. Its stride-based size and codec buffer-count examples are historical rules of
+thumb for that documented path, not universal allocation contracts. At information change, use
+`mpp_frame_get_buf_size(frame)` and the reported format/strides, then confirm the actual capacity
+with `mpp_buffer_get_size`. Bound the group from measured stream requirements and memory budget.
 
 Design consequence:
 
@@ -77,13 +80,14 @@ Design consequence:
 
 The RGA FAQ makes several specific points:
 
-- Alignment requirements differ by format.
-- RGA fetches image lines in 4-byte or 32-bit aligned units.
-- `RGB565` needs 2-byte alignment.
-- `RGB888` needs 4-byte alignment.
-- YUV formats have special constraints: width stride commonly needs 4 alignment, and YUV dimensions or offsets often need 2 alignment.
+- Alignment requirements differ by hardware generation, format, and read mode.
+- In common raster modes, RGA2-family RGB888/NV12 width strides use a 4-pixel multiple while RGA3
+  uses 16; RGA3 RGB565 and RGBA8888 have their own 8- and 4-pixel multiples.
+- Raster YUV logical dimensions and offsets are even; ten-bit and non-linear modes add stricter rules.
 
-It also shows a concrete `imcheck()` failure case where `NV12` width `1281` fails because YUV width is not aligned to `2`.
+The FAQ shows a concrete `imcheck()` failure where logical NV12 width 1281 is not even. Padding the
+stride alone does not make odd logical YUV geometry valid. Consult the exact RGA generation table
+and use `imcheck()` for the complete request.
 
 Use that as a first-pass filter when RGA rejects an otherwise plausible pipeline.
 
@@ -131,5 +135,5 @@ Therefore:
 
 - Linux kernel V4L2 DMA-BUF importer API: https://docs.kernel.org/userspace-api/media/v4l/dmabuf.html
 - Linux kernel dma-buf overview: https://docs.kernel.org/driver-api/dma-buf.html
-- Rockchip MPP readme: https://github.com/rockchip-linux/mpp/blob/develop/readme.txt
-- Rockchip librga FAQ: https://github.com/airockchip/librga/blob/master/docs/Rockchip_FAQ_RGA_EN.md
+- Rockchip MPP README (snapshot `df4864b`): https://github.com/rockchip-linux/mpp/blob/df4864bd1e907cbfd427c397348976c5b2b05ee9/readme.txt
+- Rockchip librga FAQ (snapshot `2b32edc`): https://github.com/airockchip/librga/blob/2b32edcb97b601b25683e2941d888c8515da6d55/docs/Rockchip_FAQ_RGA_EN.md

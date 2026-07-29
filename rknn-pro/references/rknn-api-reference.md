@@ -16,7 +16,7 @@ Detailed parameter descriptions, calling sequences, and constraints for the Rock
 ### `rknn_init`
 
 ```c
-int rknn_init(rknn_context *ctx, void *model, size_t size, uint32_t flag, rknn_init_extend *extend);
+int rknn_init(rknn_context *ctx, void *model, uint32_t size, uint32_t flag, rknn_init_extend *extend);
 ```
 
 Initialize RKNN runtime context from a `.rknn` model blob.
@@ -45,6 +45,19 @@ frame so a single-threaded loop waits less. The same header says multithreaded m
 flag. Re-check the selected target header because this behavior is version-bound; do not use the flag
 as proof that `rknn_run` is nonblocking or that one context is safe for concurrent calls.
 
+The model length is `uint32_t` in the current API. Validate file length, allocation, and complete
+read before initialization; reject a `size_t` value above `UINT32_MAX` rather than narrowing it.
+
+### `rknn_dup_context`
+
+```c
+int rknn_dup_context(rknn_context* context_in, rknn_context* context_out);
+```
+
+Both parameters are pointers. Check the return before using `context_out`. The current header does
+not state a weight-sharing or memory-saving guarantee, so measure memory and validate lifecycle
+behavior on the deployed Runtime instead of making duplication mandatory.
+
 ### `rknn_destroy`
 
 ```c
@@ -60,7 +73,7 @@ Destroy the runtime context and free all associated resources.
 ### `rknn_query`
 
 ```c
-int rknn_query(rknn_context ctx, rknn_query_cmd cmd, void *info, size_t info_size);
+int rknn_query(rknn_context ctx, rknn_query_cmd cmd, void *info, uint32_t info_size);
 ```
 
 Query model and runtime information.
@@ -70,7 +83,7 @@ Query model and runtime information.
 | `RKNN_QUERY_IN_OUT_NUM` | `rknn_input_output_num` | Number of input / output tensors |
 | `RKNN_QUERY_INPUT_ATTR` | `rknn_tensor_attr` | Attributes of a specific input tensor |
 | `RKNN_QUERY_OUTPUT_ATTR` | `rknn_tensor_attr` | Attributes of a specific output tensor |
-| `RKNN_QUERY_PERF_DETAIL` | `rknn_perf_detail` | Performance breakdown per layer |
+| `RKNN_QUERY_PERF_DETAIL` | `rknn_perf_detail` | Runtime-generated performance report string; requires the collect-performance init flag and a completed output retrieval in the current header |
 | `RKNN_QUERY_MEM_SIZE` | `rknn_mem_size` | Memory usage of model |
 
 **Illustrative tensor attributes (`rknn_tensor_attr`; exact fields are header-version dependent):**
@@ -86,8 +99,8 @@ typedef struct {
     uint32_t size_with_stride;// stride-aware total size on newer API 2.x headers; feature-detect it
     rknn_tensor_fmt fmt;      // data format (NHWC/NCHW/...)
     rknn_tensor_type type;    // data type (INT8/INT16/FP16/FP32/UINT8)
-    uint32_t w_stride;        // width stride (for zero-copy)
-    uint32_t h_stride;        // height stride (for zero-copy)
+    uint32_t w_stride;        // read-only in the current header; 0 means logical width
+    uint32_t h_stride;        // write-only in the current header; 0 means logical height
     rknn_tensor_qnt_type qnt_type; // quantization type
     int8_t fl;                // fractional length (for DFP quantization)
     int32_t zp;               // zero point (signed — asymmetric INT8 zero points can be negative)
@@ -100,6 +113,9 @@ compatibility code. Use CMake `check_struct_has_member` against the header selec
 prefer `size_with_stride` when present, and guard direct access to optional `size` and
 `size_with_stride` members independently. See
 [memory-alignment.md](memory-alignment.md) for the complete build and allocation pattern.
+
+`rknn_perf_detail` exposes `perf_data` and `data_len` in the pinned header. Treat `perf_data` as a
+version-specific report string; there is no structured per-layer member to dereference.
 
 ---
 
@@ -191,6 +207,9 @@ Create internal NPU-accessible memory. Returns handle for use with `rknn_set_io_
 - For every tensor allocation, compare the compatibility-selected size field, `size`, and
   `size_with_stride` when available. For an RGA-written input, also include the bytes implied by
   the actual destination strides; then apply the target allocator's page/alignment requirement.
+- Perform those calculations in checked `size_t`/`uint64_t`, then reject values above `UINT32_MAX`
+  before calling this API. Newer headers may expose `rknn_create_mem2` with a 64-bit size; feature
+  detect it and follow its allocation-flag contract rather than silently switching APIs.
 
 ### `rknn_create_mem_from_fd`
 
@@ -219,7 +238,8 @@ int rknn_set_io_mem(rknn_context ctx, rknn_tensor_mem *mem, rknn_tensor_attr *at
 Bind pre-allocated NPU memory to an input or output tensor. Used instead of `rknn_inputs_set` for zero-copy paths.
 
 - `mem`: handle from `rknn_create_mem` or `rknn_create_mem_from_fd`.
-- `attr`: tensor attributes (index, w_stride, h_stride, etc.). Query via `rknn_query` first.
+- `attr`: tensor attributes queried first. In the current header, preserve read-only `w_stride` and
+  make the backing buffer satisfy it; set write-only `h_stride` from the real physical layout.
 
 ### `rknn_destroy_mem`
 
@@ -261,49 +281,78 @@ is available on every SoC/runtime; validate the selected target and check the re
 ```c
 // 1. Load model
 FILE *fp = fopen("model.rknn", "rb");
-fseek(fp, 0, SEEK_END);
-size_t model_size = ftell(fp);
-rewind(fp);
+if (fp == NULL) return -1;
+if (fseek(fp, 0, SEEK_END) != 0) {
+    fclose(fp);
+    return -1;
+}
+long file_size = ftell(fp);
+if (file_size <= 0 || (unsigned long)file_size > UINT32_MAX ||
+    fseek(fp, 0, SEEK_SET) != 0) {
+    fclose(fp);
+    return -1;
+}
+uint32_t model_size = (uint32_t)file_size;
 void *model = malloc(model_size);
-fread(model, 1, model_size, fp);
+if (model == NULL || fread(model, 1, model_size, fp) != model_size) {
+    free(model);
+    fclose(fp);
+    return -1;
+}
 fclose(fp);
 
 // 2. Init
-rknn_context ctx;
-rknn_init(&ctx, model, model_size, 0, NULL);
+rknn_context ctx = 0;
+int ret = rknn_init(&ctx, model, model_size, 0, NULL);
 free(model);
+if (ret != RKNN_SUCC) return ret;
 
 // 3. Query input/output
-rknn_input_output_num io_num;
-rknn_query(ctx, RKNN_QUERY_IN_OUT_NUM, &io_num, sizeof(io_num));
-rknn_tensor_attr input_attrs[io_num.n_input];
-// ... query and set attr.index
+rknn_input_output_num io_num = {0};
+ret = rknn_query(ctx, RKNN_QUERY_IN_OUT_NUM, &io_num, sizeof(io_num));
+if (ret != RKNN_SUCC) goto destroy_ctx;
+if (io_num.n_input != 1 || io_num.n_output != 1) {
+    ret = RKNN_ERR_PARAM_INVALID;
+    goto destroy_ctx;
+}
 
 // 4. Set input
-rknn_input inputs[1];
+rknn_input inputs[1] = {0};
 inputs[0].index = 0;
 inputs[0].buf = image_data;
 inputs[0].size = image_size;
 inputs[0].pass_through = 0;
 inputs[0].type = RKNN_TENSOR_UINT8;
 inputs[0].fmt = RKNN_TENSOR_NHWC;
-rknn_inputs_set(ctx, 1, inputs);
+ret = rknn_inputs_set(ctx, 1, inputs);
+if (ret != RKNN_SUCC) goto destroy_ctx;
 
 // 5. Run
-rknn_run(ctx, NULL);
+ret = rknn_run(ctx, NULL);
+if (ret != RKNN_SUCC) goto destroy_ctx;
 
 // 6. Get output
-rknn_output outputs[1];
+rknn_output outputs[1] = {0};
+outputs[0].index = 0;
 outputs[0].want_float = 1;
-rknn_outputs_get(ctx, 1, outputs, NULL);
+ret = rknn_outputs_get(ctx, 1, outputs, NULL);
+if (ret != RKNN_SUCC) goto destroy_ctx;
 
 // 7. Process
 process_result(outputs[0].buf, outputs[0].size);
 
 // 8. Release
-rknn_outputs_release(ctx, 1, outputs);
-rknn_destroy(ctx);
+ret = rknn_outputs_release(ctx, 1, outputs);
+
+destroy_ctx:
+{
+    int destroy_ret = rknn_destroy(ctx);
+    return ret != RKNN_SUCC ? ret : destroy_ret;
+}
 ```
+
+`image_size` must also be validated as representable by `rknn_input.size` before this sequence.
+Real code should use structured cleanup/RAII rather than copying the `goto` outline into C++.
 
 ### Zero-copy path (DMA-BUF import)
 
@@ -314,31 +363,50 @@ rknn_destroy(ctx);
 rknn_tensor_attr input_attr;
 memset(&input_attr, 0, sizeof(input_attr));
 input_attr.index = 0;
-rknn_query(ctx, RKNN_QUERY_INPUT_ATTR, &input_attr, sizeof(input_attr));
+if (rknn_query(ctx, RKNN_QUERY_INPUT_ATTR, &input_attr, sizeof(input_attr)) != RKNN_SUCC) {
+    return -1;
+}
 
 rknn_tensor_attr output_attr;
 memset(&output_attr, 0, sizeof(output_attr));
 output_attr.index = 0;
-rknn_query(ctx, RKNN_QUERY_OUTPUT_ATTR, &output_attr, sizeof(output_attr));
+if (rknn_query(ctx, RKNN_QUERY_OUTPUT_ATTR, &output_attr, sizeof(output_attr)) != RKNN_SUCC) {
+    return -1;
+}
 
 // 2. Make RGA produce the queried input layout, writing into a DMA-BUF
 uint32_t dst_w_stride = input_attr.w_stride ? input_attr.w_stride : model_width;
-uint32_t dst_h_stride = input_attr.h_stride ? input_attr.h_stride : model_height;
+uint32_t dst_h_stride = rga_destination_h_stride;  // from the real allocation/layout
 // Pass dst_w_stride/dst_h_stride to RGA wrapbuffer_fd/wrapbuffer_handle.
 int rga_fd = get_rga_output_fd();
+input_attr.h_stride = dst_h_stride;  // write-only bind input in the current header
 
 // 3. Import the fd as NPU input memory (virt_addr = CPU mapping, offset usually 0)
-rknn_tensor_mem *input_mem = rknn_create_mem_from_fd(ctx, rga_fd, rga_virt_addr, input_size, 0);
+rknn_tensor_mem *input_mem = rknn_create_mem_from_fd(
+    ctx, rga_fd, rga_virt_addr, CheckedSizeToUint32(input_size), 0);
+if (input_mem == NULL) return -1;
 
 // 4. Allocate output memory (size rules: see memory-alignment.md)
-rknn_tensor_mem *output_mem = rknn_create_mem(ctx, output_alloc_size);
+rknn_tensor_mem *output_mem = rknn_create_mem(ctx, CheckedSizeToUint32(output_alloc_size));
+if (output_mem == NULL) {
+    rknn_destroy_mem(ctx, input_mem);
+    return -1;
+}
 
 // 5. Bind BOTH input and output before running
-rknn_set_io_mem(ctx, input_mem, &input_attr);
-rknn_set_io_mem(ctx, output_mem, &output_attr);
+if (rknn_set_io_mem(ctx, input_mem, &input_attr) != RKNN_SUCC ||
+    rknn_set_io_mem(ctx, output_mem, &output_attr) != RKNN_SUCC) {
+    rknn_destroy_mem(ctx, input_mem);
+    rknn_destroy_mem(ctx, output_mem);
+    return -1;
+}
 
 // 6. Single run — NPU reads input_mem and writes output_mem directly
-rknn_run(ctx, NULL);
+if (rknn_run(ctx, NULL) != RKNN_SUCC) {
+    rknn_destroy_mem(ctx, input_mem);
+    rknn_destroy_mem(ctx, output_mem);
+    return -1;
+}
 
 // 7. Read only what you need from output_mem->virt_addr
 //    (mind cache flags — see rknn_mem_sync in known-crash-patterns.md)
@@ -347,3 +415,13 @@ rknn_destroy_mem(ctx, input_mem);
 rknn_destroy_mem(ctx, output_mem);
 rknn_destroy(ctx);
 ```
+
+`CheckedSizeToUint32` denotes a project helper that rejects values above `UINT32_MAX`. This outline
+omits application-specific cache synchronization and RGA completion, both of which must be proven
+before the NPU reads the imported memory.
+
+## Source Snapshot
+
+Validated 2026-07-28 against the official Runtime header at Toolkit2 commit
+[`59a913d172e7f5ff03c9076e2ec7b1b1288ffd08`](https://github.com/airockchip/rknn-toolkit2/blob/59a913d172e7f5ff03c9076e2ec7b1b1288ffd08/rknpu2/runtime/Linux/librknn_api/include/rknn_api.h).
+Use the deployed target header and Runtime as the final contract.

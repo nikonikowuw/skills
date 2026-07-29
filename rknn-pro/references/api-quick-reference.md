@@ -15,14 +15,17 @@ see the dedicated reference files:
 
 ```c
 // Initialize runtime
-int rknn_init(rknn_context *ctx, void *model, size_t size, uint32_t flag, rknn_init_extend *extend);
+int rknn_init(rknn_context *ctx, void *model, uint32_t size, uint32_t flag, rknn_init_extend *extend);
 // flag: 0 (default), RKNN_FLAG_PRIOR_MEDIUM, RKNN_FLAG_PRIOR_HIGH, RKNN_FLAG_PRIOR_LOW
 //       RKNN_FLAG_ASYNC_MASK, RKNN_FLAG_COLLECT_PERF_MASK
 // ASYNC_MASK has previous-frame output semantics in current headers; it is not a generic
 // nonblocking-run or same-context multithreading guarantee. Read the selected target header.
 
+// Duplicate a context; both parameters are pointers. The header does not promise weight sharing.
+int rknn_dup_context(rknn_context *context_in, rknn_context *context_out);
+
 // Query model I/O info
-int rknn_query(rknn_context ctx, rknn_query_cmd cmd, void *info, size_t info_size);
+int rknn_query(rknn_context ctx, rknn_query_cmd cmd, void *info, uint32_t info_size);
 // cmd: RKNN_QUERY_IN_OUT_NUM, RKNN_QUERY_INPUT_ATTR, RKNN_QUERY_OUTPUT_ATTR, etc.
 
 // Set inputs
@@ -55,7 +58,8 @@ rknn_tensor_mem *rknn_create_mem_from_fd(rknn_context ctx, int32_t fd, void *vir
 // Create memory from a physical address (virt_addr is the matching CPU mapping)
 rknn_tensor_mem *rknn_create_mem_from_phys(rknn_context ctx, uint64_t phys_addr, void *virt_addr, uint32_t size);
 
-// Set tensor with memory handle (zero-copy input)
+// Set tensor with memory handle. In the current header w_stride is read-only and h_stride is
+// write-only; preserve the queried width stride and set height stride from the backing layout.
 int rknn_set_io_mem(rknn_context ctx, rknn_tensor_mem *mem, rknn_tensor_attr *attr);
 
 // Destroy memory

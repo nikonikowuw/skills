@@ -29,7 +29,7 @@ Rockchip's official RGA FAQ documents these patterns:
 | `Only get buffer X byte ... current required Y byte` | Import size must match the later format/strides; do not reuse an NV12-sized handle as RGBA | Official constraint |
 
 Official source:
-https://github.com/airockchip/librga/blob/master/docs/Rockchip_FAQ_RGA_EN.md
+https://github.com/airockchip/librga/blob/2b32edcb97b601b25683e2941d888c8515da6d55/docs/Rockchip_FAQ_RGA_EN.md
 
 Useful community cases in the official librga tracker include padded-stride plus DMA-addressability
 failures, invalid fd lifetime, and repeated virtual-address conversion crashes. Before using a case,
@@ -80,19 +80,21 @@ Rockchip MPP's official readme states:
   readme explicitly says "memory leak or crash may happen";
 - internal mode can consume uncontrolled memory;
 - half-internal mode permits group limits;
-- external mode needs correct externally allocated buffer sizes;
-- a safe decode allocation is `hor_stride * ver_stride * 2` including extra information;
-- H.264/H.265 commonly need more than 20 buffers and other codecs commonly need around 10.
+- external mode needs correctly sized externally allocated buffers;
+- the README's stride-based size and codec pool-count examples are rules of thumb for its
+  documented path, not universal contracts;
+- current code should use the information-change frame's `mpp_frame_get_buf_size`, verify the
+  attached `MppBuffer` capacity, and bound the pool for the actual codec/stream/BSP.
 
 Official source:
-https://github.com/rockchip-linux/mpp/blob/develop/readme.txt
+https://github.com/rockchip-linux/mpp/blob/df4864bd1e907cbfd427c397348976c5b2b05ee9/readme.txt
 
 The maintained `mpp_buffer.h` also defines reference counting, group limits, DMA32, contiguity,
 kmap, cache synchronization, import/commit, and get/put contracts. Audit the installed header when
 the local API differs.
 
 Official source:
-https://github.com/rockchip-linux/mpp/blob/develop/inc/mpp_buffer.h
+https://github.com/rockchip-linux/mpp/blob/df4864bd1e907cbfd427c397348976c5b2b05ee9/inc/mpp_buffer.h
 
 ## DMA-BUF and Fence Contracts
 

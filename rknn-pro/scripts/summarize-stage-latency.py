@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 import argparse
+import contextlib
 import re
 import statistics
+import sys
 from collections import defaultdict
 
 
@@ -10,7 +12,11 @@ PATTERN = re.compile(r"(?P<stage>[A-Za-z0-9_-]+)\s*[:=]\s*(?P<value>\d+(?:\.\d+)
 
 def load_samples(path):
     samples = defaultdict(list)
-    with open(path, "r", encoding="utf-8") as fh:
+    if path in (None, "-"):
+        source = contextlib.nullcontext(sys.stdin)
+    else:
+        source = open(path, "r", encoding="utf-8")
+    with source as fh:
         for line in fh:
             match = PATTERN.search(line)
             if not match:
@@ -36,13 +42,22 @@ def parse_args():
     parser = argparse.ArgumentParser(
         description="Summarize Rockchip pipeline stage timings as CSV."
     )
-    parser.add_argument("timing_log", help="log containing entries such as infer=5.2ms")
+    parser.add_argument(
+        "timing_log",
+        nargs="?",
+        default="-",
+        help="log containing entries such as infer=5.2ms; omit or use '-' for stdin",
+    )
     return parser.parse_args()
 
 
 def main():
     args = parse_args()
-    samples = load_samples(args.timing_log)
+    try:
+        samples = load_samples(args.timing_log)
+    except OSError as exc:
+        print(f"error: unable to read timing log '{args.timing_log}': {exc}", file=sys.stderr)
+        return 2
     if not samples:
         print("No stage timing samples found. Expected lines like: infer=5.2ms or rga: 830us")
         return 1

@@ -76,12 +76,26 @@ Use one of these patterns:
 | One worker per context | Models can use separate cores or CPU/RGA work overlaps inference | Queue bounds, shutdown, context ownership, and core masks are explicit. |
 | Context pool for one model | Multiple independent requests need bounded concurrency | Each leased context has isolated I/O memory and cannot be returned while work is in flight. |
 
-### Industrial Multi-Threading Standard (Weight Sharing)
+### Context Creation and Duplication
 
-In a multi-threaded architecture (e.g. processing 4 camera streams with the same YOLO model), you must balance memory consumption and thread safety:
-1. **NEVER share a single `rknn_context` across threads**: Concurrent `rknn_run()` calls on the same context are not thread-safe and will cause memory corruption or deadlocks.
-2. **NEVER call `rknn_init()` per thread**: Initializing the same model multiple times duplicates the heavy model weights in memory, quickly leading to OOM (Out Of Memory) on embedded boards.
-3. **MANDATORY**: Use `rknn_dup_context()`. Call `rknn_init()` exactly once on the main thread to create the root context and load the weights. Then, for each worker thread, call `rknn_dup_context(root_ctx, &thread_ctx)`. This creates a fully isolated execution context (activations, states, inputs/outputs) for each thread while safely sharing the read-only model weights in memory.
+The current official header declares:
+
+```c
+int rknn_dup_context(rknn_context* context_in, rknn_context* context_out);
+```
+
+Both arguments are pointers. A call shaped like `rknn_dup_context(root_ctx, &worker_ctx)` has the
+wrong first-argument type. The header describes context duplication but does not promise a specific
+read-only weight-sharing or memory-saving contract. Do not present duplication as mandatory or use
+it to calculate memory capacity without measurement.
+
+For concurrent workers, keep one owned context per worker unless the exact Runtime documentation
+explicitly permits concurrent calls on one context. Establish an independently initialized context
+per worker as the compatibility baseline. For several workers running the same model, separately
+test checked `rknn_dup_context(&root_ctx, &worker_ctx)` on the deployed stack, validate numerical
+results and lifecycle behavior, and compare RSS/PSS plus `RKNN_QUERY_MEM_SIZE` against independent
+`rknn_init` calls. On any failed duplicate, destroy only contexts successfully created and fall back
+to a supported initialization plan. Different models require their own initialization path.
 
 ## Memory Budget
 
@@ -133,25 +147,35 @@ consumer.
 
 ## Multi-Core Binding Strategies (NPU, RGA, MPP)
 
-For SoCs with multiple NPU, RGA, or MPP cores (e.g., RK3588, RK3576), relying entirely on the driver's `AUTO` scheduling in high-concurrency scenarios often leads to driver lock contention, cache thrashing, and suboptimal throughput.
+For SoCs with multiple accelerator cores, start from driver/Runtime automatic scheduling and measure
+it. Contention, memory bandwidth, cache behavior, model structure, and thermal limits are hypotheses,
+not consequences that can be inferred from stream count alone.
 
 ### NPU Core Binding
-- **Single Heavy Model**: Use `RKNN_NPU_CORE_0_1_2` (RK3588) to split a single large inference task across all 3 cores. This minimizes single-frame latency but adds layer-splitting overhead.
-- **Multiple Independent Streams (High FPS)**: Bind each `rknn_context` to a distinct physical core (e.g., Context A → `RKNN_NPU_CORE_0`, Context B → `RKNN_NPU_CORE_1`). This eliminates context-switching overhead and maximizes total system FPS, though individual frame latency is bounded by a single core's performance.
+- For a heavy model, benchmark AUTO, supported combined masks, and single-core masks. A combined mask
+  does not guarantee that every layer is split or that latency falls.
+- For independent streams, benchmark separate contexts with AUTO before one-core-per-context masks.
+  Explicit masks may improve isolation or may reduce utilization; record every return code.
 
 ### RGA Core Binding
-RK3588 features multiple RGA cores (e.g., RGA2, RGA3). By default, `im2d` queues work dynamically.
-- **Avoid Cross-Stream Contention**: When processing multiple camera streams, bind Stream A's preprocessing entirely to `IM_HAL_CORE_RGA2` and Stream B to `IM_HAL_CORE_RGA3` using `im_opt_t.core` or `imconfig`. This prevents a heavy resize operation on Stream A from stalling Stream B's VSync-bound pipeline.
-- **Capability Matching**: RGA3 generally supports higher resolutions and more complex color space conversions than RGA2. Pin 4K/8K or exotic CSC tasks explicitly to RGA3.
+RK3588 exposes RGA2- and RGA3-generation cores, but their limits differ by format and operation. Use
+the detected core capability output, pinned librga guide, and `imcheck`; for example, RGA2 may allow
+a wider scale ratio while RGA3 may allow a larger output, so neither is universally preferable.
+
+Current librga scheduler values include `IM_SCHEDULER_RGA3_CORE0`,
+`IM_SCHEDULER_RGA3_CORE1`, and `IM_SCHEDULER_RGA2_CORE0`. They are passed through
+`imconfig(IM_CONFIG_SCHEDULER_CORE, value)` or `im_opt_t.core` with the matching extended API, not
+ORed into ordinary operation flags. The official guide warns that explicit core/priority
+configuration can crash or deadlock the system and advises using it only during development and
+debugging, not in products. Use it only as a controlled diagnostic with checked returns, then return
+to automatic production scheduling unless the board vendor provides a validated contract.
 
 ### MPP Core Binding (VDPU/VEPU)
-RK3588 features multiple hardware video decoders (VDPU) and encoders (VEPU). While the MPP kernel driver attempts to load-balance, high-density stream decoding (e.g. 16x 1080p cameras) can experience jitter if streams bounce between cores.
-- **Explicit Isolation**: You can bind a specific `MppCtx` to a fixed hardware core. Use `MppDecCfg` (or `MppEncCfg`) and set the core ID explicitly:
-  ```c
-  mpp_dec_cfg_set_u32(cfg, "hw:core_id", 1); // Bind to VDPU core 1
-  mpi->control(ctx, MPP_DEC_SET_CFG, cfg);
-  ```
-- **When to use**: Apply explicit core binding when you have deterministic, long-running video streams (e.g., NVR/IPC applications) to ensure strict QoS and cache warmth for each stream.
+The pinned upstream MPP headers/examples do not define a generic decoder/encoder context key for
+binding a stream to a VDPU/VEPU core. Leave core selection to the driver. A vendor BSP may add a
+private control, but use it only when that exact BSP documents the key, accepted values, and
+lifecycle; check the configuration and `mpi->control` returns. Do not copy an unrecognized string
+key into portable MPP code.
 
 ## Cascade Buffer Contract
 
@@ -160,7 +184,7 @@ For every crop buffer, record:
 | Field | Source of truth |
 |---|---|
 | Logical tensor shape and format | `RKNN_QUERY_INPUT_ATTR` plus conversion report |
-| `w_stride` / `h_stride` | Queried native/input attributes supported by the target header |
+| Width/height stride | Queried read-only `w_stride` plus the actual backing allocation's `h_stride`, supplied through the current header's write-only field |
 | Minimum RKNN bytes | Available `size_with_stride`/size fields, feature-detected at build time |
 | RGA destination bytes | Checked format-specific calculation from actual destination strides |
 | Allocation bytes | Checked maximum of all applicable minima, then required alignment |
@@ -173,7 +197,8 @@ Initialization sequence for a bounded crop pool:
 2. Compute allocation bytes with checked multiplication/addition and the real pixel format.
 3. Allocate with `rknn_create_mem`; reject null and clean up previously acquired slots on failure.
 4. Import each returned fd into RGA; reject invalid handles and preserve one release per import.
-5. Wrap RGA destinations with the queried strides, not logical width/height defaults.
+5. Wrap RGA destinations with queried read-only `w_stride` and the actual backing height stride,
+   not logical width/height defaults; set write-only `h_stride` to that physical value at bind time.
 6. Bind or lease a slot only while it is not in flight; release all RGA handles before destroying
    their RKNN memory.
 
@@ -198,7 +223,7 @@ detector worker:
   preprocess into a free detector slot
   run detector and check outputs
   decode, clamp, and validate ROIs
-  snap ROIs to hardware-aligned boundaries (e.g., 4-byte/even coordinates) to prevent RGA crop failure
+  adapt ROIs to the source format/core/read-mode pixel constraints, clamp, then run imcheck
   enqueue a bounded task that retains the frame reference
 
 classifier worker:
@@ -238,8 +263,9 @@ memory, fd count, and thermal frequency. Warm up first and keep model artifacts 
 - Enabling `RKNN_FLAG_ASYNC_MASK` without tracking previous-frame output identity.
 - Concurrently calling one context because the application has multiple threads.
 - Assuming AUTO is bad or a wider core mask is always faster without measurement.
-- Allocating crop buffers from `width * height * channels` while ignoring queried strides.
-- Passing unaligned crop coordinates from the first stage directly to RGA without snapping to hardware boundaries.
+- Allocating crop buffers from `width * height * channels` while ignoring queried read-only
+  `w_stride`, actual backing height stride, and checked byte sizing.
+- Applying a universal byte-based ROI rule instead of format/core/read-mode pixel constraints and `imcheck`.
 - Returning an MPP/V4L2 frame before downstream RGA work completes.
 - Passing an fd between contexts without importing it separately or defining ownership.
 - Ignoring `rknn_set_core_mask`, query, allocation, RGA, or output return codes.
@@ -248,6 +274,8 @@ memory, fd count, and thermal frequency. Warm up first and keep model artifacts 
 
 ## Sources
 
-- RKNN Runtime API header: https://github.com/airockchip/rknn-toolkit2/blob/master/rknpu2/runtime/Linux/librknn_api/include/rknn_api.h
+- RKNN Runtime API header (snapshot `59a913d`): https://github.com/airockchip/rknn-toolkit2/blob/59a913d172e7f5ff03c9076e2ec7b1b1288ffd08/rknpu2/runtime/Linux/librknn_api/include/rknn_api.h
 - RKNN Toolkit2 repository and examples: https://github.com/airockchip/rknn-toolkit2
 - RKNN model zoo: https://github.com/airockchip/rknn_model_zoo
+- librga developer guide (snapshot `2b32edc`): https://github.com/airockchip/librga/blob/2b32edcb97b601b25683e2941d888c8515da6d55/docs/Rockchip_Developer_Guide_RGA_EN.md
+- MPP source snapshot (`df4864b`): https://github.com/rockchip-linux/mpp/tree/df4864bd1e907cbfd427c397348976c5b2b05ee9

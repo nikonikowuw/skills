@@ -305,16 +305,48 @@ def iter_calls(text, masked):
         yield match.group(1), match.start(), end + 1, text[open_pos + 1:end], masked[open_pos + 1:end]
 
 
+def looks_like_template_open(masked, index):
+    if index == 0 or masked[index - 1].isspace():
+        return False
+    previous = masked[index - 1]
+    if not (previous.isalnum() or previous in "_>:])"):
+        return False
+
+    depth = 1
+    nested_depth = 0
+    for pos in range(index + 1, len(masked)):
+        ch = masked[pos]
+        if ch in "([{":
+            nested_depth += 1
+        elif ch in ")]}":
+            nested_depth = max(0, nested_depth - 1)
+        elif nested_depth == 0:
+            if ch == "<" and pos > 0 and not masked[pos - 1].isspace():
+                depth += 1
+            elif ch == ">":
+                depth -= 1
+                if depth == 0:
+                    return True
+            elif ch in "?;":
+                return False
+    return False
+
+
 def split_args(raw, masked):
     args = []
     start = 0
-    depth = 0
+    stack = []
     for i, ch in enumerate(masked):
-        if ch in "([{<":
-            depth += 1
-        elif ch in ")]}>":
-            depth = max(0, depth - 1)
-        elif ch == "," and depth == 0:
+        if ch in "([{":
+            stack.append(ch)
+        elif ch in ")]}":
+            if stack and (stack[-1], ch) in {("(", ")"), ("[", "]"), ("{", "}")}:
+                stack.pop()
+        elif ch == "<" and looks_like_template_open(masked, i):
+            stack.append("<")
+        elif ch == ">" and stack and stack[-1] == "<":
+            stack.pop()
+        elif ch == "," and not stack:
             args.append(raw[start:i].strip())
             start = i + 1
     tail = raw[start:].strip()
@@ -346,13 +378,21 @@ def has_unchecked_arithmetic(expr):
 
 
 def call_is_unchecked(text, start, end):
-    line_start = text.rfind("\n", 0, start) + 1
+    statement_start = max(
+        text.rfind("\n", 0, start),
+        text.rfind(";", 0, start),
+        text.rfind("{", 0, start),
+        text.rfind("}", 0, start),
+    ) + 1
     line_end = text.find("\n", end)
     if line_end < 0:
         line_end = len(text)
-    prefix = text[line_start:start].strip()
+    prefix = text[statement_start:start].strip()
     suffix = text[end:line_end].strip()
-    if any(token in prefix for token in ("=", "return", "if", "while", "for", "switch", "assert")):
+    checked_prefix = re.search(
+        r"(?:\b(?:return|if|while|for|switch|assert)\b|(?<![=!<>])=(?!=))", prefix
+    )
+    if checked_prefix:
         return False
     return (not prefix or prefix in {"(void)"}) and suffix.startswith(";")
 

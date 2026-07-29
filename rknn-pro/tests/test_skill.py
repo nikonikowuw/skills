@@ -1,5 +1,8 @@
 import importlib.util
 import json
+import os
+import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -7,6 +10,7 @@ import tempfile
 import unittest
 from collections import Counter
 from pathlib import Path
+from unittest import mock
 
 
 SKILL_ROOT = Path(__file__).resolve().parents[1]
@@ -21,6 +25,15 @@ def load_script(name):
 
 
 class SkillIntegrityTests(unittest.TestCase):
+    def test_documented_helpers_are_directly_executable(self):
+        skill = (SKILL_ROOT / "SKILL.md").read_text(encoding="utf-8")
+        documented = set(re.findall(r"scripts/([A-Za-z0-9_-]+\.(?:py|sh))", skill))
+        self.assertIn("run-skill-evals.py", documented)
+        for name in documented:
+            helper = SKILL_ROOT / "scripts" / name
+            self.assertTrue(helper.is_file(), helper)
+            self.assertTrue(os.access(helper, os.X_OK), f"documented helper is not executable: {helper}")
+
     def test_markdown_links_are_portable_and_resolve(self):
         for markdown in SKILL_ROOT.rglob("*.md"):
             text = markdown.read_text(encoding="utf-8")
@@ -39,6 +52,12 @@ class SkillIntegrityTests(unittest.TestCase):
             self.assertTrue(item["prompt"])
             self.assertTrue(item["expected_output"])
             self.assertGreaterEqual(len(item["expectations"]), 3)
+            self.assertIsInstance(item.get("route"), str)
+            self.assertTrue(item["route"])
+            for field in ("required_terms", "forbidden_terms"):
+                if field in item:
+                    self.assertTrue(all(isinstance(value, str) for value in item[field]))
+        self.assertGreaterEqual(len({item["route"] for item in data["evals"]}), 5)
 
         triggers = json.loads((SKILL_ROOT / "evals" / "trigger-evals.json").read_text(encoding="utf-8"))
         self.assertGreaterEqual(len(triggers), 20)
@@ -58,6 +77,8 @@ API version: 2.3.2
 """
         first = baseline.environment_fingerprint(evidence)
         self.assertEqual(first, baseline.environment_fingerprint(evidence))
+        reordered = "\n".join(reversed(evidence.strip().splitlines())) + "\n"
+        self.assertEqual(first, baseline.environment_fingerprint(reordered))
         self.assertNotEqual(first, baseline.environment_fingerprint(evidence.replace("2.3.2", "2.3.3")))
         rendered = baseline.build_baseline(evidence)
         self.assertIn("Device identifier: abcdef1234567890", rendered)
@@ -117,6 +138,23 @@ target_link_libraries(app PRIVATE /opt/rk/lib/libmpp.so)
         copy_finding = next(item for item in findings if item.rule_id == "MEM002")
         self.assertEqual(copy_finding.line, 5)
         self.assertEqual(copy_finding.priority, "high")
+
+    def test_auditor_parses_comparisons_and_checks_each_call_statement(self):
+        audit = load_script("audit-rockchip-memory-safety.py")
+        source = (
+            "void run(void *ctx, unsigned n, unsigned cap, unsigned width, unsigned height) {\n"
+            "  calloc(n < cap ? n : cap, width * height);\n"
+            "  int prior_status = 0; rknn_run(ctx, 0);\n"
+            "  int checked = rknn_run(ctx, 0);\n"
+            "}\n"
+        )
+        inventory = Counter()
+        findings = []
+        audit.scan_file(Path("sample.c"), source, inventory, findings)
+
+        self.assertTrue(any(item.rule_id == "MEM003" and item.line == 2 for item in findings))
+        unchecked = [item for item in findings if item.rule_id == "API001"]
+        self.assertEqual([(item.line, item.evidence) for item in unchecked], [(3, "rknn_run(ctx, 0)")])
 
     def test_sensitive_evidence_collector_refuses_existing_directory(self):
         script = SKILL_ROOT / "scripts" / "collect-rockchip-crash-evidence.sh"
@@ -227,6 +265,41 @@ target_link_libraries(app PRIVATE /opt/rk/lib/libmpp.so)
         self.assertEqual(candidate["constant_inputs"][0]["sample"], [255.0])
         self.assertIn("cannot confirm", " ".join(report["limitations"]))
 
+    def test_onnx_inspector_decodes_only_constants_reached_from_input_prefix(self):
+        try:
+            import onnx
+            from onnx import TensorProto, helper, numpy_helper
+        except ImportError:
+            self.skipTest("onnx is not installed")
+
+        inspector = load_script("inspect-onnx-model.py")
+        input_info = helper.make_tensor_value_info("images", TensorProto.FLOAT, [1])
+        output_info = helper.make_tensor_value_info("normalized", TensorProto.FLOAT, [1])
+        scale = helper.make_tensor("scale", TensorProto.FLOAT, [1], [255.0])
+        unused = helper.make_tensor("unused_weights", TensorProto.FLOAT, [1024], [0.0] * 1024)
+        divide = helper.make_node("Div", ["images", "scale"], ["normalized"])
+        graph = helper.make_graph(
+            [divide], "lazy-constant-test", [input_info], [output_info], [scale, unused]
+        )
+        model = helper.make_model(graph, opset_imports=[helper.make_opsetid("", 13)])
+        decoded = []
+        original_to_array = numpy_helper.to_array
+
+        def record_decode(tensor, *args, **kwargs):
+            decoded.append(tensor.name)
+            return original_to_array(tensor, *args, **kwargs)
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            model_path = Path(temp_dir) / "model.onnx"
+            onnx.save(model, str(model_path))
+            with mock.patch.object(numpy_helper, "to_array", side_effect=record_decode):
+                report = inspector.inspect_model(model_path)
+
+        self.assertIn("scale", decoded)
+        self.assertNotIn("unused_weights", decoded)
+        candidate = report["preprocessing_candidates"][0]
+        self.assertEqual(candidate["constant_inputs"][0]["name"], "scale")
+
     def test_latency_cli_supports_help_and_samples(self):
         script = SKILL_ROOT / "scripts" / "summarize-stage-latency.py"
         help_run = subprocess.run(["python3", str(script), "--help"], capture_output=True, text=True)
@@ -238,6 +311,126 @@ target_link_libraries(app PRIVATE /opt/rk/lib/libmpp.so)
         self.assertEqual(run.returncode, 0, run.stderr)
         self.assertIn("infer,2,6.000", run.stdout)
         self.assertIn("rga,1,0.800", run.stdout)
+
+        stdin_run = subprocess.run(
+            [str(script)],
+            input="infer=5.0ms\nrga: 800us\ninfer=7.0ms\n",
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(stdin_run.returncode, 0, stdin_run.stderr)
+        self.assertIn("infer,2,6.000", stdin_run.stdout)
+
+    def test_read_only_diagnostic_uses_static_elf_inspection(self):
+        script = (SKILL_ROOT / "scripts" / "rknn-diag.sh").read_text(encoding="utf-8")
+        self.assertNotRegex(script, r"\bcapture\s+ldd\b")
+        self.assertRegex(script, r"\b(?:readelf|objdump)\b")
+
+    def test_reference_contract_regressions_are_absent(self):
+        skill_and_references = "\n".join(
+            path.read_text(encoding="utf-8")
+            for path in [SKILL_ROOT / "SKILL.md", *sorted((SKILL_ROOT / "references").glob("*.md"))]
+        )
+        for invalid in (
+            "IM_HAL_CORE_RGA2",
+            "IM_HAL_CORE_RGA3",
+            '"hw:core_id"',
+            "perf.layer_detail",
+            "uint8_t zp",
+            "hor_stride * ver_stride * 2",
+            "Read only first N bytes",
+            "MPP external buffer mode unavailable on old BSP",
+            "decoder is stuck in internal or half-internal",
+            "running on CPU` — ops that fall back",
+        ):
+            self.assertNotIn(invalid, skill_and_references)
+        self.assertNotRegex(skill_and_references, r"MANDATORY[^\n]*rknn_dup_context")
+        self.assertRegex(
+            skill_and_references,
+            r"rknn_dup_context\(rknn_context\s*\*\s*context_in",
+        )
+        self.assertIn("w_stride` is read-only", skill_and_references)
+        self.assertIn("h_stride` is write-only", skill_and_references)
+        self.assertIn("IM_SCHEDULER_RGA3_CORE0", skill_and_references)
+
+        rknn_refs = "\n".join(
+            (SKILL_ROOT / "references" / name).read_text(encoding="utf-8")
+            for name in ("api-quick-reference.md", "rknn-api-reference.md")
+        )
+        self.assertNotIn("void *model, size_t size", rknn_refs)
+        self.assertNotIn("void *info, size_t info_size", rknn_refs)
+
+        rga = (SKILL_ROOT / "references" / "rga-api-reference.md").read_text(
+            encoding="utf-8"
+        )
+        for capability in ("color fill", "ROP", "mosaic", "OSD", "Gaussian"):
+            self.assertIn(capability, rga)
+
+        scheduling = (SKILL_ROOT / "references" / "multi-model-scheduling.md").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("actual backing allocation's `h_stride`", scheduling)
+
+    def test_eval_runner_executes_a_model_adapter_and_records_raw_output(self):
+        runner = SKILL_ROOT / "scripts" / "run-skill-evals.py"
+        with tempfile.TemporaryDirectory() as temp_dir:
+            stub = Path(temp_dir) / "model.py"
+            stub.write_text(
+                "import json, sys\n"
+                "prompt = sys.stdin.read()\n"
+                "if 'Complete the user task below' in prompt:\n"
+                "    print('RKNN_TENSOR_FLOAT32 is valid; inspect pass_through and measure conversion.')\n"
+                "else:\n"
+                "    print(json.dumps({'should_trigger': True, 'reason': 'RKNN task'}))\n",
+                encoding="utf-8",
+            )
+            model_arg = "stub={} {}".format(
+                shlex.quote(sys.executable), shlex.quote(str(stub))
+            )
+            run = subprocess.run(
+                [
+                    str(runner),
+                    "--mode",
+                    "triggers",
+                    "--limit",
+                    "1",
+                    "--model",
+                    model_arg,
+                    "--model",
+                    model_arg.replace("stub=", "second=", 1),
+                ],
+                capture_output=True,
+                text=True,
+            )
+            behavior_run = subprocess.run(
+                [
+                    str(runner),
+                    "--mode",
+                    "behavior",
+                    "--limit",
+                    "1",
+                    "--compare-without",
+                    "--model",
+                    model_arg,
+                ],
+                capture_output=True,
+                text=True,
+            )
+
+        self.assertEqual(run.returncode, 0, run.stderr)
+        report = json.loads(run.stdout)
+        result = report["models"]["stub"]["triggers"]["results"][0]
+        self.assertTrue(result["passed"])
+        self.assertIn('"should_trigger": true', result["execution"]["stdout"])
+        self.assertTrue(report["models"]["second"]["triggers"]["results"][0]["passed"])
+
+        self.assertEqual(behavior_run.returncode, 0, behavior_run.stderr)
+        comparison = json.loads(behavior_run.stdout)["models"]["stub"]["behavior"][
+            "comparison"
+        ]
+        self.assertEqual(comparison["with_skill"]["automated"], 1)
+        self.assertEqual(comparison["without_skill"]["automated"], 1)
+        self.assertEqual(comparison["pass_rate_delta"], 0.0)
 
 
 if __name__ == "__main__":
