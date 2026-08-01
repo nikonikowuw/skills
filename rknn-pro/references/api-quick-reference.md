@@ -66,6 +66,25 @@ int rknn_set_io_mem(rknn_context ctx, rknn_tensor_mem *mem, rknn_tensor_attr *at
 int rknn_destroy_mem(rknn_context ctx, rknn_tensor_mem *mem);
 ```
 
+### Input `type` — UINT8 is the standard host type for INT8 models
+
+With `pass_through=0` (the default), `rknn_tensor_attr.type` describes the **host buffer's data
+type**, not the model's graph type. The Runtime converts the host data into the model's expected
+type internally. Therefore:
+
+- A quantized model whose queried input `type` is `RKNN_TENSOR_INT8` (e.g. `zp=-128`) is still fed
+  through a host buffer declared as `RKNN_TENSOR_UINT8` (raw RGB bytes). This is correct and is the
+  official convention — **not** a type mismatch.
+- Official Rockchip samples confirm this: `rknn_yolov5_demo/src/main.cc` and
+  `rknn_model_zoo/examples/yolov8_pose/cpp/rknpu2/yolov8-pose.cc` (same yolov8_pose structure as
+  the fall-detection model) both set `input.type = RKNN_TENSOR_UINT8` with `pass_through=0` for
+  quantized models.
+- Only with `pass_through=1` does the buffer bypass conversion and reach the input node raw; then
+  the host type must already match the model type. Production pipelines keep `pass_through=0`.
+
+Preserve the queried attributes (`zp`, `scale`, `w_stride`, …) from `rknn_query(INPUT_ATTR)` and
+override only `type` when calling `rknn_set_io_mem` — that matches the official usage.
+
 ## RKNN Runtime — NPU Core Mask (multi-core)
 
 ```c

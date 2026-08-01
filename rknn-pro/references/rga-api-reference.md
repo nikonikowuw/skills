@@ -248,6 +248,27 @@ their own constraints. If the driver can schedule a request onto several generat
 strictest applicable rule. Use checked arithmetic from
 [memory-alignment.md](memory-alignment.md) for byte sizing and run `imcheck` on the complete request.
 
+### Verified Fix Patterns (RK3576 production debugging, 2026-08)
+
+Two alignment fixes confirmed end-to-end on an RK3576 (RGA2+RGA3) fall-detection pipeline that was
+failing at `imcheck` with `ALGO_RGA_PROCESS_FAILED`:
+
+1. **NV12 odd logical height → `imcheck` "Error yuv not align to 2"**. A 600×423 NV12 source with a
+   correctly aligned `wstride=608`/`hstride=424` still failed because the *logical* rect height 423
+   was odd. Fix: align the NV12 logical `src_w`/`src_h` up to even at the `ResizeAndConvert` entry
+   (`AlignUp(src_w, 2)`, `AlignUp(src_h, 2)`) before computing rects and letterbox geometry. Reading
+   the zeroed padding row is harmless; dropping the odd row is not.
+
+2. **RGB888 src only 4-pixel aligned → fails on RGA3's 16-pixel rule**. The source repack helper
+   rounded RGB888/BGR24 wstride to 4 (satisfying RGA2 but not RGA3). Fix: repack when
+   `src_stride_w & 15 != 0`, `AlignUp(src_w, 16)`, and run letterbox geometry with `alignment=16`
+   (so `new_w`/`new_h`/`pad_x`/`pad_y` are also 16-multiples). 16 is a superset of RGA2's 4, so the
+   same shared library stays correct on RK3568 (RGA2) and RK3576 (RGA3).
+
+Always run `imcheck` with the exact rects and operation flags after these alignments; the error
+string from `imStrError(imcheck(...))` (e.g. `"Error yuv not align to 2"`) names the offending
+source/dst and the exact rule, which beats guessing at stride tables.
+
 ### Unaligned Cascade Cropping (Two-Stage Networks)
 
 In multi-model cascades (for example detection, crop, then recognition), a detector can produce a

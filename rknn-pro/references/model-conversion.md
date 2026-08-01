@@ -199,7 +199,10 @@ raw_input.pass_through = 0;
 
 The corrected example is valid only when the preserved conversion config, queried input attributes,
 and parity test establish that exact contract. `pass_through=0` does not prove that the graph is
-INT8; it controls Runtime-side input processing.
+INT8; it controls Runtime-side input processing. In particular, a model whose queried input `type`
+is `RKNN_TENSOR_INT8` is still fed through a host buffer declared as `RKNN_TENSOR_UINT8` with
+`pass_through=0` — this is the official convention (see
+[api-quick-reference.md](api-quick-reference.md) "Input `type`"), not a mismatch.
 
 **Why this matters for zero-copy:**
 - If the model expects [0,255] uint8, you can feed the raw image memory to it. **However**, raw V4L2/MPP decoder output is usually NV12/NV21, so you MUST run it through RGA for CSC (Color Space Conversion) and format matching (to RGB/BGR NHWC) before zero-copy RKNN ingestion. You cannot feed raw NV12 directly as `RKNN_TENSOR_UINT8` if the model expects RGB/BGR!
