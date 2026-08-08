@@ -17,6 +17,73 @@ given core's capability: match SoC/core/format/read mode against the pinned guid
 capabilities where supported, and require `imcheck` success. If the exact request is unsupported,
 choose a measured CPU, GPU, NPU, or multi-stage fallback appropriate to the application.
 
+### Resolution and Scaling Limits
+
+| Core family | Input resolution | Output resolution | Scaling range | MMU address width |
+| --- | --- | --- | --- | --- |
+| RGA2 / RGA2e | 2×2 – 8192×8192 | 2×2 – 4096×4096 | 1/16× – 16× | 32-bit (≤ 4 GB) |
+| RGA3 | 68×2 – 8176×8176 | 68×2 – 8128×8128 | 1/8× – 8× | 40-bit (native) |
+
+These limits are hard constraints enforced by the hardware. Common violations:
+
+- **RGA3 minimum dimension** — a 32×32 crop for a classifier will fail on RGA3 (minimum is 68);
+  route to RGA2 explicitly or resize in two steps.
+- **RGA3 scaling ratio** — a 1920×1080→128×72 resize exceeds 1/8×; split into two passes
+  (e.g. 1920→480 then 480→128) or route to RGA2 which allows 1/16×.
+- **4 GB physical-address boundary** — RGA1/RGA2 MMU resolves only 32-bit physical addresses.
+  Buffers allocated above 4 GB cause `RGA_MMU unsupported Memory larger than 4G!` and fall back
+  to `swiotlb` bounce copy or fail outright. Use `dma_heap` with `DMA32` flag or restrict DDR
+  capacity in U-Boot when targeting RGA2-only cores.
+
+When the driver can schedule a request onto multiple core generations, the strictest applicable
+limit governs.
+
+### Hardware Throughput
+
+| Core family | Pixels per clock cycle | Typical clock range |
+| --- | ---: | --- |
+| RGA1 | 1 | SoC-dependent |
+| RGA2 | 2 | SoC-dependent |
+| RGA3 | 4 | SoC-dependent |
+
+Estimated copy latency: `width × height / (pixels_per_cycle × frequency)`. This is a theoretical
+lower bound; actual latency includes setup, memory, and synchronization overhead.
+
+### Multi-Core Scheduling and Jitter
+
+RK3588 contains two RGA3 cores and one RGA2 core. Because the scaling algorithms differ between
+RGA2 and RGA3, unpinned workloads that shift between core types can produce **visible sampling
+jitter** in scaled outputs. If output determinism matters:
+
+- Bind to a single core type using `imconfig(IM_CONFIG_SCHEDULER_CORE, IM_SCHEDULER_RGA3_CORE0)`
+  for the thread, or use `im_opt_t.core` with the extended `improcess` overload.
+- The official guide warns that core/priority configuration can cause a system crash or deadlock;
+  use it for development/debugging. In production, prefer automatic scheduling unless the platform
+  vendor supplies a validated product-specific contract.
+- For **load balancing** without jitter (e.g. two RGA2 cores on RK3576), use
+  `IM_SCHEDULER_RGA2_CORE0 | IM_SCHEDULER_RGA2_CORE1` to spread work across same-generation cores.
+
+### librga / Driver Version Compatibility
+
+- `librga` ≥ 1.4.0 requires kernel driver ≥ v1.2.0. Mismatches cause compatibility-mode fallback
+  or outright parameter failures.
+- A version mismatch between librga and driver can produce **pink or green color shifts** during
+  RGB↔YUV conversion because the default CSC color space configuration differs between versions.
+- Check versions: `cat /sys/kernel/debug/rkrga/driver_version` (or `/proc/rkrga/driver_version`),
+  and `querystring(RGA_VERSION)` in code or `strings librga.so | grep version`.
+
+### Memory Type Performance
+
+| Memory type | Relative cost | Notes |
+| --- | --- | --- |
+| Physical address | ~1.1–1.2× theoretical | Fastest; limited to drivers that expose physical addresses |
+| DMA FD (`dma_buf`) | ~1.3–1.5× theoretical | **Recommended default**. Allocate uncached to avoid CPU cache sync |
+| Virtual address | ~1.8–2.1× theoretical | CPU builds page tables every frame and forces cache flushes |
+
+Prefer `dma_fd` for all production pipelines. Virtual-address submission adds CPU overhead and has
+caused kernel crashes on some platforms (IOMMU page faults during `rga_mm_sync_dma_sg_for_device`
+when the mapping is released or invalid).
+
 ### When to use RGA vs CPU vs NPU
 
 | Criterion | RGA | CPU (NEON) | NPU (RKNN) |
@@ -217,6 +284,42 @@ value**, not by pointer; `mode_usage` defaults to 0 in the C++ declaration. Succ
 **Always call `imcheck` before production operations** — RGA returns opaque errors on invalid parameters.
 This is especially important when buffer dimensions or formats come from runtime data.
 
+**Using `imStrError`** — when `imcheck` fails, `imStrError(ret)` returns a human-readable string
+naming the exact rule violation (e.g. `"Error yuv not align to 2"`, `"Error srcRect"`). Log it for
+faster diagnosis rather than guessing at stride tables.
+
+---
+
+## Synchronization Modes
+
+| Mode | Behavior | When to use |
+| --- | --- | --- |
+| `IM_SYNC` / `sync=1` | Block until hardware finishes | Simple sequential pipelines |
+| `IM_ASYNC` / `sync=0` | Return immediately; call `imsync()` to wait | When CPU work can overlap |
+| Job + fence | `imendJob` accepts `acquire_fence_fd` and returns `release_fence_fd` | Multi-stage DMA-BUF pipelines with cross-device synchronization |
+
+### Job/Task Batch API
+
+For multi-operation pipelines or async fence-based synchronization:
+
+```c
+im_job_handle_t job = imbeginJob(0);  // or IM_JOB_FLAGS_EXEC_SEQUENTIAL for ordering
+
+// Queue multiple operations into the job
+imresizeTask(job, src, dst, 0, 0, INTER_LINEAR);
+imcvtcolorTask(job, src2, dst2, sfmt, dfmt, mode);
+
+// Submit with optional fence synchronization
+int release_fence = -1;
+IM_STATUS ret = imendJob(job, IM_ASYNC, acquire_fence_fd, &release_fence);
+// release_fence signals when all tasks in the job complete
+```
+
+- `IM_JOB_FLAGS_EXEC_SEQUENTIAL` ensures tasks within the job execute in order.
+- `imcancelJob(job)` aborts a created but unsubmitted job.
+- Each `*Task` variant (e.g. `imresizeTask`, `imcropTask`) queues into a job handle instead of
+  executing immediately.
+
 ---
 
 ## Pixel Formats (`RK_FORMAT_*`)
@@ -234,19 +337,56 @@ This is especially important when buffer dimensions or formats come from runtime
 
 ## Alignment Rules (Common Pitfalls)
 
-Raster alignment depends on hardware generation and format:
+### Raster Format Alignment
 
-| Core family | RGBA8888 width stride | RGB565 width stride | RGB888 width stride | NV12/NV21 width stride |
-| --- | ---: | ---: | ---: | ---: |
-| RGA2 family | no additional pixel multiple | 2 | 4 | 4 |
-| RGA3 | 4 | 8 | 16 | 16 |
+The hardware fetches line data in 32-bit (4-byte) word units. Pixel alignment requirements follow
+from byte-stride constraints per core generation:
+
+| Core family | Byte stride align | RGBA8888 w_stride | RGB565 w_stride | RGB888 w_stride | NV12/NV21 w_stride | Max stride |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| RGA2 family | 4 bytes | no extra pixel multiple | 2 px | 4 px | 4 px | 32768 |
+| RGA3 | 16 bytes | 4 px | 8 px | 16 px | 16 px | 32768 |
 
 For raster NV12/NV21, x/y offsets, logical width/height, and height stride must also be even. An odd
 logical width such as 1281 remains invalid even if the backing stride is rounded up. RGA3 ten-bit
-YUV requires a width stride multiple of 64 and x/y offsets multiple of 4; FBC and tile read modes add
-their own constraints. If the driver can schedule a request onto several generations, satisfy the
-strictest applicable rule. Use checked arithmetic from
-[memory-alignment.md](memory-alignment.md) for byte sizing and run `imcheck` on the complete request.
+YUV requires a width stride multiple of 64 and x/y offsets multiple of 4.
+
+### Non-Linear / Compressed Format Alignment (FBC / AFBC / Tile)
+
+Non-linear read/write modes require stricter block-aligned layout:
+
+| Mode | Width stride alignment | Height stride alignment | Available on |
+| --- | ---: | ---: | --- |
+| AFBC 16×16 | 16 px | 16 px | RGA3 |
+| AFBC 32×8 | 32 px | 8 px | RGA2-Pro |
+| RKFBC 64×4 | 64 px | 4 px | RGA2-Pro |
+| TILE 8×8 | 8 px | 8 px | Selected cores |
+| TILE 4×4 | 4 px | 4 px | Selected cores |
+
+Requesting a FBC/AFBC/tile mode on a buffer that does not meet the block alignment causes hardware
+timeout or IRQ error, not a clean parameter rejection. The error in dmesg is typically
+`rga: Rga err irq!` or `job hardware has timeout` with no clear indication that FBC alignment is
+the cause. Always verify the source/destination allocation meets the selected read mode's alignment
+before submission.
+
+### Combined Constraint Rule
+
+If the driver can schedule a request onto several core generations, satisfy the strictest applicable
+rule. Use checked arithmetic from [memory-alignment.md](memory-alignment.md) for byte sizing and
+run `imcheck` on the complete request.
+
+### Per-Core Format Support
+
+| Core variant | SoCs | Key format additions |
+| --- | --- | --- |
+| RGA2 / RGA2e | RK3568, RK3566 | RGB, YUV420/422 SP/Planar, palette BPP1/2/4/8 |
+| RGA2-Lite1 | Selected SoCs | Adds 10-bit YUV420/422 SP input |
+| RGA2-Enhance | Selected SoCs | Adds YUYV/YVYU/UYVY/VYUY 422, YCbCr_400, Y4/Y8 |
+| RGA2-Pro | RK3576, RV1126B | Adds YCbCr 444 SP, A8 source blend, AFBC/FBC compressed formats, RGBA 1010102, Y210 |
+| RGA3 | RK3588 | RGB, 8/10-bit YUV 420/422 SP, YUYV, AFBC 16×16. **No YUV alpha blending** |
+
+**Blending restriction**: Image blending does not support YUV format images on any RGA core.
+Convert to RGB before blending.
 
 ### Verified Fix Patterns (RK3576 production debugging, 2026-08)
 
@@ -365,6 +505,36 @@ return ret == IM_STATUS_SUCCESS ? 0 : -1;
 ---
 
 ## Troubleshooting RGA Failures
+
+### Complete Kernel Error → Root Cause Map
+
+| dmesg / log pattern | Root cause | Fix |
+| --- | --- | --- |
+| `Cannot get dst channel buffer` | DMA-BUF fd closed before RGA finished; stale cached handle from `wrapbuffer_fd` | Use `importbuffer_fd` once + `wrapbuffer_handle` per frame (see cascade section below) |
+| `failed to map buffer` | IOMMU cannot resolve fd to physical pages | Verify fd validity, lifetime, and that the exporter has not reclaimed the buffer |
+| `dma_buf_get fail fd[N]` | Kernel cannot obtain dma-buf from the fd | Validate fd creation, ownership, lifetime before RGA submission |
+| `RGA2 failed to get vma` / `failed to get pte` | Virtual-address buffer smaller than calculated image size, or DRM kmap released | Ensure mapped bytes ≥ format × strides; for DRM use `ROCKCHIP_BO_ALLOC_KMAP` flag |
+| `set mmu info error` | Page-table mapping failed for virtual address or fd | Check buffer size matches format/strides; verify memory allocator compatibility |
+| `RGA_MMU unsupported Memory larger than 4G!` | Buffer above 4 GB physical; RGA1/RGA2 MMU is 32-bit | Allocate with `DMA32` heap flag or restrict DDR in U-Boot |
+| `rga_policy: invalid function policy` | Requested params/address incompatible with available cores | Check resolution limits, format support per core; avoid forcing a core that can't handle the operation |
+| `rga: job assign failed` | No available core matches the request | Usually follows a `soft reset` or `invalid policy`; fix the upstream cause |
+| `abort! finished 0 failed 0` | Pre-commit validation cancelled the job | Symptom of upstream buffer/param failure; not a standalone cause |
+| `job hardware has timeout` + `INTR[0x840700]` | IOMMU page fault caused hardware hang | Fix buffer lifecycle (see cascade); or verify FBC mode matches buffer format |
+| `rga: Rga err irq! INT[701],STATS[1]` | Hardware execution exception: out-of-bounds memory or illegal register | Verify buffer size, stride, and format; check FBC alignment if compressed mode |
+| `Rga sync pid X wait 1 task done timeout` | Hardware task exceeded 200 ms | DDR bus congestion, mismatched FBC flags, lowered clock, or CPU preemption blocking IRQ |
+| `hardware has finished, but the software has timeout!` | CPU core handling RGA interrupt was preempted by RT tasks before softirq | Check RT scheduling; adjust IRQ affinity or RGA timeout threshold |
+| `soft reset complete` | Kernel recovered a hung core | Effect, not a root cause; fix the job that caused the hang |
+| `no core match` | Scheduler has no available core | All eligible cores are in reset or the request parameters exclude all cores |
+| `mpp_rkvdec2 timeout/resetting` | Decoder pipeline back-pressured because RGA is not consuming frames | Fix RGA pipeline; decoder stalls are an effect of the RGA failure |
+| `RgaBlit fail: Not a typewriter` | Parameter invalidity: stride < width+offset, scaling beyond limits, or alignment error | Verify stride ≥ offset + dimension; check scaling ratio within core limits |
+| `RgaBlit fail: Bad file descriptor` | Invalid fd passed to the ioctl | Verify fd is valid and not already closed |
+| `RgaBlit fail: Bad address` | Out-of-bounds src/src1/dst memory address | Verify buffer allocation size and mapping |
+| `RgaBlit fail: Invalid argument` | Operations/params exceed matching core capabilities | Check format/operation support on the selected core |
+| `err ws[X,Y,Z]` / `Error srcRect` | `x_offset + width > width_stride` violation | Ensure rect fits within the declared stride |
+| `Error yuv not align to 2` | YUV logical width/height/offset is odd | Align NV12/NV21 logical dimensions up to even |
+| `Try to use uninit rgaCtx=(nil)` | librga singleton uninitialized; legacy `RgaInit/RgaDeInit`, or `/dev/rga` permission denied | Check device node permissions; avoid legacy init/deinit in im2d API code |
+| `Only get buffer X byte...current required Y byte` | Import size doesn't match the format/strides for the operation | Re-import with correct size: `w_stride × h_stride × bpp` (accounting for multi-plane) |
+| `Decrement the reference of handle...when user exits` | Leaked `buffer_handle` — import not matched with release | Pair every `importbuffer_*` with `releasebuffer_handle` |
 
 ### RGA DMA-BUF lifecycle cascade failure
 

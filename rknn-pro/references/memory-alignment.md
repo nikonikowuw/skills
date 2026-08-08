@@ -24,6 +24,7 @@ runtime errors.
 | **RGA2 family** NV12/NV21 | Width stride multiple of 4 | x/y/width/height/height stride all even | Allocator/driver contract | Checked bytes from actual plane layout |
 | **RGA3** RGB565 / RGB888 / RGBA8888 | 8 / 16 / 4 pixels | Format- and read-mode-specific | Allocator/driver contract | Checked bytes from actual strides and format |
 | **RGA3** NV12/NV21 | Width stride multiple of 16 | x/y/width/height/height stride all even | Allocator/driver contract | Checked bytes from actual plane layout |
+| **RGA FBC/AFBC** | AFBC16×16: 16 px; AFBC32×8: 32 px; RFBC64×4: 64 px | AFBC16×16: 16 px; AFBC32×8: 8 px; RFBC64×4: 4 px | Allocator/driver contract | Block-aligned layout from compressed format spec |
 | **MPP** decode | Returned frame layout | Returned frame layout | Selected MPP allocator | `mpp_frame_get_buf_size`; confirm with `mpp_buffer_get_size` |
 | **RKNN** `rknn_inputs_set` | Host tensor contract | Host tensor contract | Host type/allocator contract | Checked value representable by the API's `uint32_t size` |
 | **RKNN** `rknn_create_mem` | Queried model layout | Actual physical height stride | Runtime-managed | Maximum applicable tensor/layout minimum, checked before narrowing |

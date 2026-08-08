@@ -50,7 +50,8 @@ SENSITIVE_APIS = (
     "rknn_destroy", "importbuffer_fd", "importbuffer_virtualaddr",
     "wrapbuffer_fd", "wrapbuffer_handle", "wrapbuffer_virtualaddr",
     "releasebuffer_handle", "imcheck", "imresize", "imcrop", "imcvtcolor",
-    "improcess", "imfill", "mpp_buffer_get", "mpp_buffer_put",
+    "improcess", "imfill", "imsync", "imbeginJob", "imendJob",
+    "mpp_buffer_get", "mpp_buffer_put",
     "mpp_buffer_import", "mpp_buffer_commit", "mpp_buffer_group_get_internal",
     "mpp_buffer_group_get_external", "mpp_buffer_group_limit_config",
     "mpp_buffer_group_put", "mpp_frame_deinit", "mpp_packet_deinit",
@@ -492,6 +493,32 @@ def scan_file(rel, text, inventory, findings, line_map=None):
             first, "RGA operation(s) without imcheck in the same translation unit",
             "Invalid rectangles, formats, strides, and hardware restrictions may reach the driver.",
             "Trace whether validation occurs in a caller; otherwise validate the real buffers and rectangles before submit.")
+
+    # RGA004: Detect per-frame wrapbuffer_fd without importbuffer_fd — the cascade failure pattern.
+    if call_counts["wrapbuffer_fd"] > 0 and call_counts["importbuffer_fd"] == 0 and call_counts["wrapbuffer_handle"] == 0:
+        first = min(source_line_number(text, start, line_map) for name, start, *_ in calls if name == "wrapbuffer_fd")
+        add(findings, "RGA004", "high", "rga-lifecycle", "wrapbuffer_fd without importbuffer_fd — cascade failure risk", rel,
+            first, f"wrapbuffer_fd={call_counts['wrapbuffer_fd']}, importbuffer_fd=0, wrapbuffer_handle=0",
+            "Per-frame wrapbuffer_fd uses librga's internal fd-cache, which returns stale handles when fds are recycled. "
+            "This is the #1 cause of RGA cascade failures (Cannot get dst channel buffer → job timeout → soft reset → pipeline stall).",
+            "Import each buffer once with importbuffer_fd, use wrapbuffer_handle per frame, and releasebuffer_handle at shutdown. "
+            "All buffers must use handle-based API — mixing handles and fd-wrap is rejected by librga.")
+
+    # RGA005: Detect mixing of handle-based and fd-based buffer APIs in the same file.
+    if call_counts["wrapbuffer_handle"] > 0 and call_counts["wrapbuffer_fd"] > 0:
+        add(findings, "RGA005", "high", "rga-lifecycle", "Mixed handle and fd buffer wrapping in same file", rel,
+            1, f"wrapbuffer_handle={call_counts['wrapbuffer_handle']}, wrapbuffer_fd={call_counts['wrapbuffer_fd']}",
+            "librga requires uniform handle usage: all buffers via importbuffer+wrapbuffer_handle, or all via wrapbuffer_fd. "
+            "Mixing causes 'librga only supports the use of handles only or no handles' warning and can abort or corrupt.",
+            "Convert all buffer wrapping to the handle-based path: importbuffer_fd once, wrapbuffer_handle per frame.")
+
+    # RGA006: RGA operations in file with no sync fence and RKNN run — missing synchronization.
+    if any(call_counts[name] for name in RGA_OP_APIS) and call_counts["rknn_run"] > 0:
+        if "imsync" not in text and "release_fence" not in text and "IM_SYNC" not in text and "sync" not in text:
+            add(findings, "RGA006", "medium", "rga-sync", "RGA-to-RKNN handoff has no visible synchronization", rel,
+                1, "RGA operation(s) and rknn_run in same file without sync/fence",
+                "If RGA runs asynchronously and RKNN reads the destination buffer before RGA finishes, the NPU reads stale or partial data.",
+                "Use IM_SYNC (sync=1) for RGA operations, or use fence-based synchronization with imendJob/release_fence_fd.")
 
     pair_rules = (
         (("importbuffer_fd", "importbuffer_virtualaddr"), "releasebuffer_handle", "LIFE001", "RGA imported handle"),

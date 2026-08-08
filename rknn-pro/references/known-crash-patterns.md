@@ -180,6 +180,183 @@ read its current comments and match SoC, kernel, librga, driver, allocator, form
 Issue search:
 https://github.com/airockchip/librga/issues
 
+## RGA Hardware Timeout (Non-Cascade)
+
+### Summary
+
+RGA hardware task exceeds the 200 ms kernel timeout without the DMA-BUF lifecycle cascade described
+above. This is a distinct failure mode with different root causes.
+
+### Symptom
+
+```
+rga: Rga sync pid <PID> wait 1 task done timeout
+```
+
+Or on multicore drivers:
+
+```
+rga: job hardware has timeout.
+rga: <core>: soft reset complete.
+```
+
+Without the preceding `Cannot get dst channel buffer` sequence.
+
+### Root Causes
+
+| Cause | How to confirm |
+| --- | --- |
+| **DDR bus congestion** | Other subsystems (decoder, GPU, display) saturating memory bus. Check `cat /sys/kernel/debug/rkrga/load` for core utilization; monitor DDR bandwidth if available |
+| **FBC mode mismatch** | Source declared as AFBC but buffer is raster, or vice versa. Verify FBC header/alignment in the allocation matches the declared RGA format/read mode |
+| **Clock frequency too low** | RGA clock scaled down by DVFS or set too low. Check `cat /sys/kernel/debug/clk/aclk_rga*/clk_rate`; temporarily raise with `echo <freq> > clk_rate` |
+| **CPU IRQ preemption** | RT-priority tasks blocking the CPU core that handles RGA softirq. Check RT scheduling with `chrt -p` on competing processes |
+| **IOMMU page fault** | Buffer memory invalid or above 4 GB on RGA2. Check `dmesg` for `INTR[0x840700]` indicating IOMMU fault |
+
+### Fix
+
+1. Isolate: reproduce with only the RGA workload active to rule out bus congestion.
+2. Verify FBC: if using compressed formats, ensure allocation matches the declared mode and meets
+   block alignment (AFBC16×16 needs 16-px aligned w_stride and h_stride).
+3. Check clocks: `cat /sys/kernel/debug/clk/aclk_rga*/clk_rate` and compare with spec.
+4. Check IRQ: if `hardware has finished, but the software has timeout!` appears, the issue is CPU
+   scheduling, not RGA — reduce RT task priority or adjust IRQ affinity.
+
+## RGA Virtual-Address Kernel Crash
+
+### Summary
+
+Using `importbuffer_virtualaddr` or `wrapbuffer_virtualaddr` can trigger a kernel crash during
+DMA cache synchronization when the virtual-address mapping is invalid or prematurely released.
+
+### Symptom
+
+```
+Unable to handle kernel paging request at virtual address ffffff8000000000
+Internal error: Oops: 96000146 [#1] SMP
+```
+
+Call stack includes `__clean_dcache_area_poc` → `iommu_dma_sync_single_for_device` →
+`rga_mm_sync_dma_sg_for_device`.
+
+### Root Cause
+
+The virtual-address path requires librga to build page tables from the CPU mapping on every
+submission. If the mapping is released, overwritten, or the allocator performs a kmap/kunmap cycle
+between allocation and RGA submission, the cache flush touches an invalid page and causes a kernel
+data abort.
+
+DRM allocations without `ROCKCHIP_BO_ALLOC_KMAP` may release the kernel mapping before RGA
+processes the buffer.
+
+### Fix
+
+- **Prefer `dma_fd` paths** — use `importbuffer_fd` instead of `importbuffer_virtualaddr`.
+- If virtual address is unavoidable: ensure the mapping remains valid for the entire RGA operation
+  lifetime, verify `mmap` returned `MAP_FAILED` check, and use an allocator that maintains kmap.
+- For DRM buffers: set `ROCKCHIP_BO_ALLOC_KMAP` allocation flag.
+
+## RGA 4 GB Memory Addressing Failure
+
+### Summary
+
+RGA1 and RGA2 cores have 32-bit MMU that cannot address physical memory above 4 GB. On systems with
+more than 4 GB RAM, buffers may be allocated above this boundary.
+
+### Symptom
+
+```
+RGA_MMU unsupported Memory larger than 4G!
+```
+
+Followed by job failure or silent fallback to `swiotlb` bounce copying (destroying zero-copy
+performance).
+
+### Fix
+
+- Allocate RGA buffers from `dma_heap` with `DMA32` flag to force below-4GB allocation.
+- Or restrict DDR size to ≤4 GB in U-Boot configuration.
+- RGA3 cores support 40-bit addressing and do not have this limitation.
+
+## RGA librga/Driver Version Mismatch
+
+### Summary
+
+When `librga` userspace library and kernel `rga` driver versions are incompatible, CSC (color space
+conversion) operations produce incorrect colors.
+
+### Symptom
+
+- Pink or green color tint on RGB↔YUV conversion output.
+- `imcheck` may still pass because the parameter structure is accepted.
+- No kernel crash, but visual output is wrong.
+
+### Root Cause
+
+`librga` ≥ 1.4.0 requires kernel driver ≥ v1.2.0. The default CSC color space configuration changed
+between versions. A mismatched pair applies different BT.601/BT.709 matrices, producing incorrect
+color channels.
+
+### Fix
+
+1. Check versions: `cat /sys/kernel/debug/rkrga/driver_version` and query librga version.
+2. Update librga and driver together from the same BSP release.
+3. If a mismatch is unavoidable, explicitly configure CSC mode in `imcvtcolor` with the correct
+   color space parameter.
+
+## RGA3 Resolution/Scaling Limit Violation
+
+### Summary
+
+RGA3 has stricter resolution and scaling limits than RGA2. Code designed for RGA2 may fail when
+scheduled onto an RGA3 core.
+
+### Symptom
+
+```
+rga_policy: invalid function policy
+rga: job assign failed
+```
+
+Or hardware timeout when the request technically passes policy but the core cannot handle it.
+
+### Root Cause
+
+- RGA3 minimum input/output dimension is 68 pixels (vs 2 for RGA2).
+- RGA3 maximum scaling ratio is 1/8× to 8× (vs 1/16× to 16× for RGA2).
+
+Common trigger: detection pipeline crops a small ROI (e.g. 32×32 face box) and tries to resize it
+via RGA3.
+
+### Fix
+
+- For small crops below 68 px: force RGA2 with core mask, use a two-step resize, or fall back to
+  CPU NEON.
+- For extreme scaling ratios: split into two RGA passes (e.g. 1920→480→128) or force RGA2.
+- On RK3588: consider routing small/extreme operations to the RGA2 core explicitly.
+
+## RGA Multi-Core Scaling Jitter (RK3588)
+
+### Summary
+
+RK3588's mix of RGA3 and RGA2 cores produces visually inconsistent scaling results when the driver
+schedules the same operation onto different core types across frames.
+
+### Symptom
+
+- Subtle per-frame jitter or shimmer in scaled video output.
+- No errors in dmesg; outputs are technically correct but visually inconsistent.
+
+### Root Cause
+
+RGA2 and RGA3 use different interpolation/sampling algorithms. When the scheduler alternates between
+core types (especially under varying load), pixel values differ slightly between frames.
+
+### Fix
+
+- Bind the thread to a single core type: `imconfig(IM_CONFIG_SCHEDULER_CORE, IM_SCHEDULER_RGA3_CORE0)`.
+- Or use the extended `improcess` overload with `im_opt_t.core` set.
+- For deterministic output, pin all video-path RGA work to the same core generation.
+
 ## RKNN Runtime Memory, Cache, and Compatibility
 
 The maintained RKNN API header documents:

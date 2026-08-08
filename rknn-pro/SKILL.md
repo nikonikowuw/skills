@@ -28,6 +28,7 @@ Build or tune Rockchip inference and media pipelines on RK3568, RK3576, and RK35
    - SDK upgrade, tensor allocation, alignment, or stride: [memory-alignment.md](references/memory-alignment.md).
    - Crash or full safety audit: follow every phase in [project-crash-risk-audit.md](references/project-crash-risk-audit.md) and use [known-crash-patterns.md](references/known-crash-patterns.md) only as evidence anchors.
    - Performance or latency diagnosis: [perf-debugging.md](references/perf-debugging.md).
+   - RGA kernel errors, debug nodes, or HAL logging: [rga-debug-guide.md](references/rga-debug-guide.md); use the error → root cause map in [rga-api-reference.md](references/rga-api-reference.md).
    - Version or BSP compatibility: [version-audit.md](references/version-audit.md).
    - Multiple boards or containers: [device-scoped-context.md](references/device-scoped-context.md).
    - Deployment strategy (PC-side vs board-side): [rknn-deployment.md](references/rknn-deployment.md).
@@ -96,6 +97,12 @@ When board-specific facts matter or fingerprint mismatches:
 - [ ] Math overflow / out-of-bounds proven impossible for strides/ROI?
 - [ ] **RGA DMA-BUF lifecycle — `importbuffer_fd` once per pool, not per-frame `wrapbuffer_fd`?** (see [known-crash-patterns.md](references/known-crash-patterns.md) — RGA cascade)
 - [ ] **RGA core load balancing — `im_set_core_mask()` set to use all available RGA cores?** (default single-core affinity is a common amplifier)
+- [ ] **RGA buffer API uniform — all buffers use handle-based or all fd-based, no mixing?**
+- [ ] **RGA resolution/scaling within core limits?** (RGA3 min 68px, max 1/8×–8×; RGA2 min 2px, max 1/16×–16×)
+- [ ] **RGA physical memory below 4 GB for RGA2?** (DMA32 heap flag if system has >4 GB RAM)
+- [ ] **FBC/AFBC buffer layout matches declared read mode alignment?** (AFBC16×16, AFBC32×8, etc.)
+- [ ] **librga and kernel driver versions compatible?** (librga ≥ 1.4.0 requires driver ≥ v1.2.0)
+- [ ] **RGA-to-RKNN synchronization present?** (IM_SYNC or fence before NPU reads RGA output)
 - [ ] Resource acquisition (fd/mmap) paired with release across all paths?
 - [ ] Queue limits enforced? Cache sync / fences ordered correctly?
 - [ ] NPU cores assigned and memory budgeted for multi-model?
@@ -109,6 +116,13 @@ When board-specific facts matter or fingerprint mismatches:
 - RKNN allocation must cover the authoritative tensor and physical-layout requirements; an undersized buffer is dangerous, but a crash alone does not prove one fixed size formula or cause → [memory-alignment.md](references/memory-alignment.md)
 - RGA validation helpers are version- and operation-dependent; use the installed validation path when applicable, but do not treat it as proof of allocation, lifetime, or synchronization safety → [rga-api-reference.md](references/rga-api-reference.md)
 - `do_quantization=True` proves only what was requested, not actual graph precision → [model-conversion.md](references/model-conversion.md)
+- **RGA3 minimum dimension is 68 px** (vs 2 px for RGA2); small detection crops fail on RGA3 → [rga-api-reference.md](references/rga-api-reference.md)
+- **RGA3 scaling limit is 1/8×–8×** (vs 1/16×–16× for RGA2); extreme resize ratios need multi-pass or RGA2 routing → [rga-api-reference.md](references/rga-api-reference.md)
+- **RGA2 MMU is 32-bit only**; buffers above 4 GB cause `RGA_MMU unsupported Memory larger than 4G!` → [known-crash-patterns.md](references/known-crash-patterns.md)
+- **RK3588 RGA3+RGA2 scaling jitter** — different interpolation algorithms between core types cause per-frame visual inconsistency; pin to one core type → [known-crash-patterns.md](references/known-crash-patterns.md)
+- **librga ≥ 1.4.0 requires driver ≥ v1.2.0**; mismatches cause pink/green color shift in CSC → [known-crash-patterns.md](references/known-crash-patterns.md)
+- **Mixing `wrapbuffer_handle` and `wrapbuffer_fd`** in the same operation is rejected by librga → [known-crash-patterns.md](references/known-crash-patterns.md)
+- **FBC/AFBC buffer alignment** must match block size (16×16, 32×8, etc.); mismatch causes hardware timeout, not clean rejection → [rga-api-reference.md](references/rga-api-reference.md)
 
 ## Operating Rules
 
@@ -116,6 +130,9 @@ When board-specific facts matter or fingerprint mismatches:
 - Normalization inquiry → read preserved conversion config/log. Do not infer from ONNX input dtype, `.rknn` filename, host C buffer type, `pass_through`, `want_float`, or Runtime convenience conversion. Missing? → mark as `unknown`.
 - DMA-BUF feasibility → verify ownership + layout + sync + consumer support for every hop. If any is unproven, keep the measured known-good path or block the zero-copy claim until evidence closes the gap; do not select a virtual-address path merely because evidence is missing.
 - RGA image processing → derive dimension, ROI, and stride constraints from the selected core, format, read mode, installed headers, and version-matched guide. Use the available validation API when applicable and check its return status; still prove allocation size, ownership, lifetime, and synchronization separately.
+- RGA kernel error or dmesg output → start from the Complete Kernel Error → Root Cause Map in [rga-api-reference.md](references/rga-api-reference.md); follow the debug workflow in [rga-debug-guide.md](references/rga-debug-guide.md). Do not guess from one log line.
+- RGA resolution/scaling failure → check per-core limits (RGA2: 2–8192 px input, 1/16–16× scale; RGA3: 68–8176 px, 1/8–8×). If the request exceeds limits, split passes or route to a different core.
+- RGA color error (pink/green tint) → check librga/driver version match first; then CSC color space configuration.
 - `RKNN_FLAG_ASYNC_MASK` question → read [multi-model-scheduling.md](references/multi-model-scheduling.md). Cite the previous-frame output rule; do not generalize to "nonblocking" or "multithreaded".
 - Zero-copy claim → identify every allocation, fd/import, CPU mapping, cache operation, fence, and release point. Any gap? → reject the claim.
 - Static-audit match → trace call paths, sizes, ownership, cleanup, and deployed versions before assigning severity. Matches are candidates, not confirmed findings.
@@ -141,3 +158,6 @@ For substantial diagnostics or reviews, report in this order:
 | Board crashed, collect evidence | `<skill-root>/scripts/collect-rockchip-crash-evidence.sh [PID]` on board |
 | Have latency logs, need stats | `python3 <skill-root>/scripts/summarize-stage-latency.py log.txt` |
 | Run repeatable trigger/behavior evals | `python3 <skill-root>/scripts/run-skill-evals.py --help` |
+| RGA kernel errors, need debug info | See [rga-debug-guide.md](references/rga-debug-guide.md) for debug nodes and HAL logging |
+| Check RGA/librga versions | `cat /sys/kernel/debug/rkrga/driver_version` + `strings librga.so \| grep version` |
+| Check RGA core load balance | `cat /proc/interrupts \| grep rga` on board |
