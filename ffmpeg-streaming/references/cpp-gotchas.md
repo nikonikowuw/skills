@@ -1,6 +1,7 @@
 # C++ 开发中的 FFmpeg 流媒体坑点
 
-## FFmpeg EOF flush (`#ffmpeg-eof-flush`)
+<a id="ffmpeg-eof-flush"></a>
+## FFmpeg EOF flush
 
 解码器和编码器的 drain 操作不同，不能混用：
 
@@ -10,7 +11,8 @@
 
 正常循环中，`send` 返回成功后要持续 `receive`，直到 `EAGAIN` 或 `EOF`，再送下一个输入。不要在尚未排空输出时不断发送新 packet/frame。
 
-## AVPacket/AVFrame 所有权 (`#ffmpeg-memory-leak`)
+<a id="ffmpeg-memory-leak"></a>
+## AVPacket/AVFrame 所有权
 
 区分“释放内部引用”和“释放对象本身”：
 
@@ -31,7 +33,8 @@ using AVPacketPtr = std::unique_ptr<AVPacket, AVPacketDeleter>;
 
 栈对象或由调用方拥有的 packet/frame 不应套用 `av_packet_free`/`av_frame_free`；按照创建 API 的所有权契约处理。
 
-## FFmpeg 网络拉流阻塞 (`#avformat-block`)
+<a id="avformat-block"></a>
+## FFmpeg 网络拉流阻塞
 
 URL timeout 和 C API 的取消回调解决不同问题：
 
@@ -40,7 +43,8 @@ URL timeout 和 C API 的取消回调解决不同问题：
 - `opaque` 指向的对象必须在 `avformat_open_input`、`av_read_frame`、seek 和关闭路径完成前保持有效。回调中只做无锁或短时操作，避免再次调用 FFmpeg。
 - 任何 `av_read_frame` 错误都要区分 EOF、取消、网络 timeout 和损坏数据；收到取消后按固定顺序停止生产、唤醒消费者、join 线程、最后关闭 FFmpeg 上下文。
 
-## 时间戳、time base 与 `AV_NOPTS_VALUE` (`#pts-dts-calc`)
+<a id="pts-dts-calc"></a>
+## 时间戳、time base 与 `AV_NOPTS_VALUE`
 
 - 每个 stream、codec 和 muxer 都可能有不同的 `time_base`。写 packet 前使用真实来源的 time base 调用 `av_packet_rescale_ts`，不要直接把整数 tick 当成毫秒。
 - 处理 `AV_NOPTS_VALUE` 前先定义策略：保留无效值并让上层处理、从可靠的输入时钟重建，或拒绝该 packet。不要把这个哨兵值直接送给 muxer。
@@ -49,6 +53,7 @@ URL timeout 和 C API 的取消回调解决不同问题：
 - `-use_wallclock_as_timestamps 1` 是输入侧的 wallclock timestamp 策略，不是通用音视频同步开关；`-fflags +genpts` 主要补生成缺失 PTS，也不能校准两个独立时钟。
 - 负 timestamp、`start_time` 和跨 stream offset 需要在同一个时钟模型中处理。修复后用 packet 级输出验证，不要只看播放器是否暂时能播放。
 
-## 异步帧管道所有权 (`#async-frame-ownership`)
+<a id="async-frame-ownership"></a>
+## 异步帧管道所有权
 
 跨线程传递 FFmpeg 对象或 ZLMediaKit `Frame::Ptr` 时，使用有界队列并明确三件事：生产者何时停止、队列满时丢什么、消费者何时释放引用。停止流程必须先阻止新回调，再唤醒队列消费者，最后销毁 codec/context；不能让回调捕获已经析构的 `this`。

@@ -31,7 +31,8 @@ rtsp://127.0.0.1/live/test
 - 常见 API 包括 `/index/api/getMediaList` 和 `/index/api/close_stream`，但应按当前版本 API 文档确认参数和权限。
 - 不要把真实 `secret`、用户名或密码写进源码、shell history、进程参数、截图或普通访问日志。示例只使用 `REDACTED`。
 
-## WebRTC (`#webrtc`)
+<a id="webrtc"></a>
+## WebRTC
 
 跨 NAT 部署至少核对：
 

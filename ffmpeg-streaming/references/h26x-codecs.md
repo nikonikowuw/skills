@@ -2,11 +2,11 @@
 
 ## H.264 软件编码
 
-`libx264` 的 profile、preset、tune 和 GOP 是编码器参数，不是所有播放器/协议的硬性保证：
+以下示例仅适用于当前 FFmpeg 构建包含 `libx264` encoder 的情况；先用 `ffmpeg -encoders` 检查。`libx264` 的 profile、preset、tune 和 GOP 是编码器参数，不是所有播放器/协议的硬性保证：
 
 ```bash
 ffmpeg -i "$INPUT" -c:v libx264 -preset veryfast \
-  -tune zerolatency -profile:v constrained_baseline \
+  -tune zerolatency -profile:v baseline \
   -b:v 2M -maxrate 2.5M -bufsize 4M "$OUTPUT"
 ```
 

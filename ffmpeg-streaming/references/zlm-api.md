@@ -1,6 +1,7 @@
 # ZLMediaKit C++ 二次开发指南
 
-## EventPoller 与阻塞任务 (`#zlm-event-poller-block`)
+<a id="zlm-event-poller-block"></a>
+## EventPoller 与阻塞任务
 
 ZLMediaKit 的 socket、协议会话和大量媒体分发回调绑定到 `EventPoller`。回调中执行数据库、磁盘、同步 HTTP、`avformat_open_input`、长时间算法推理或不可控等待，会阻塞同一个 poller 上的其他 I/O；具体影响范围取决于对象绑定的 poller，不应假设每个连接都有独立线程。
 
@@ -34,7 +35,8 @@ toolkit::WorkThreadPool::Instance().getPoller()->async(
 
 `async` 只解决线程归属，不解决队列无界、任务取消、结果过期或对象生命周期。需要为队列设置容量、超时和 shutdown 行为。
 
-## 当前帧分发 API (`#zlm-track-dispatch`)
+<a id="zlm-track-dispatch"></a>
+## 当前帧分发 API
 
 当前 ZLMediaKit upstream 的常见路径是先从 `MediaSource::getTracks(true)` 获取已经 ready 的 track，再对具体 `Track` 使用 `FrameDispatcher::addDelegate`。不要使用未经版本证明的 `MediaSource::addTrackListener`：不同 fork 可能有同名封装，但当前 upstream 的接口和 `Track` 生命周期应以头文件为准。
 

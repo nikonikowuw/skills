@@ -2,12 +2,12 @@
 name: ffmpeg-streaming
 description: >
   Load when the user asks to develop, integrate, debug, or review C++ native code
-  using FFmpeg libav* or ZLMediaKit: AVPacket/AVFrame ownership,
-  send/receive and flush, RTSP/RTP/GB28181, PTS/DTS, timeout/callback,
-  asynchronous media pipelines, EventPoller, or frame dispatch. Include SDK
-  integration, packet loss, timestamp jumps, decoder stalls, and native leaks.
-  Do not use for ffmpeg/ffprobe command-only help, browser-only WebRTC,
-  Python/OpenCV or Java media code, or generic playback questions.
+  using FFmpeg libav* or ZLMediaKit: AVPacket/AVFrame ownership, send/receive,
+  flush, RTSP/RTP/GB28181, PTS/DTS, timeout/callback, async media pipelines,
+  EventPoller, or frame dispatch. Include SDK integration, packet loss, timestamp
+  jumps, decoder stalls, and native leaks. Do not use for ffmpeg/ffprobe
+  command-only help, browser-only WebRTC, Python/OpenCV or Java media code, or
+  generic playback questions.
 ---
 
 # FFmpeg SDK 与 ZLMediaKit C++ 开发
@@ -41,7 +41,7 @@ CLI-only 的 FFmpeg 命令、浏览器端 WebRTC、Python/OpenCV 或普通播放
 
 - 解码器和编码器的 flush API 不同：见 `references/cpp-gotchas.md#ffmpeg-eof-flush`。
 - `AVPacket`/`AVFrame` 的引用释放和对象释放不是一回事：见 `references/cpp-gotchas.md#ffmpeg-memory-leak`。
-- `avformat_open_input`/`av_read_frame` 的退出必须同时有协议 timeout 和可取消的 `interrupt_callback`：见 `references/cpp-gotchas.md#avformat-block`。
+- `avformat_open_input`/`av_read_frame` 的退出要按协议能力配置 timeout；C++ 拉流必须有可取消的 `interrupt_callback`：见 `references/cpp-gotchas.md#avformat-block`。
 - 任何跨 stream 的 PTS/DTS 处理都先确认 time base 和 clock policy：见 `references/cpp-gotchas.md#pts-dts-calc`。
 - ZLMediaKit 当前帧监听路径是 `getTracks()` 后对 `Track` 使用 `addDelegate()`；见 `references/zlm-api.md#zlm-track-dispatch`。
 - WebRTC NAT、RTC UDP/TCP 端口和 TURN 端口池是不同配置面：见 `references/gotchas.md#webrtc-nat-blackscreen` 和 `references/zlmediakit.md#webrtc`。

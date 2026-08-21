@@ -35,6 +35,10 @@ for (;;) {
         break;
     }
     if (ret < 0) return ret;
+    if (pkt->stream_index != video_stream_index) {
+        av_packet_unref(pkt);
+        continue;
+    }
 
     for (;;) {
         ret = avcodec_send_packet(codec_ctx, pkt);
@@ -82,6 +86,7 @@ static int interrupt_cb(void *opaque) noexcept {
 }
 
 AVFormatContext *fmt_ctx = avformat_alloc_context();
+// Keep state alive for every FFmpeg call that may invoke interrupt_cb.
 ReadState state{false, std::chrono::steady_clock::now() + std::chrono::seconds(5)};
 fmt_ctx->interrupt_callback = AVIOInterruptCB{interrupt_cb, &state};
 

@@ -19,7 +19,8 @@ ffmpeg -hide_banner -protocols
 ```bash
 STREAM_URL='rtsp://user:password@example.invalid/live/test'
 
-ffprobe -v error \
+ffprobe -rtsp_transport tcp -timeout 5000000 \
+  -v error \
   -select_streams v:0 \
   -show_entries stream=codec_name,profile,width,height,avg_frame_rate,time_base \
   -of default=noprint_wrappers=1 \
@@ -52,7 +53,8 @@ ffmpeg -hide_banner -loglevel warning \
 对短窗口检查 packet 时间戳，不要仅凭播放器表现判断：
 
 ```bash
-ffprobe -v error -select_streams v:0 \
+ffprobe -rtsp_transport tcp -timeout 5000000 \
+  -v error -select_streams v:0 \
   -read_intervals '%+10' -show_packets \
   -show_entries packet=pts_time,dts_time,flags \
   -of csv=p=0 "$STREAM_URL"
